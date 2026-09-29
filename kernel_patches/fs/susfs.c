@@ -43,6 +43,7 @@ DEFINE_STATIC_KEY_FALSE(susfs_is_log_enabled);
 #define SUSFS_LOGE(fmt, ...) 
 #endif
 
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
 
 bool susfs_is_sus_path_loop_active(void)
@@ -125,12 +126,16 @@ void susfs_add_sus_path(void __user **user_info) {
 		susfs_mark_fuse_sus_path(fi);
 		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n", 
 					info.target_pathname, fi->nodeid, fi->inode.i_ino, fi->inode.i_mapping->flags);
+		if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+			static_branch_enable(&susfs_has_sus_path_rules);
 		info.err = 0;
 		goto out_path_put_path;
 	}
 
 	if (!susfs_mapping_is_sus_path(inode->i_mapping))
 		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		static_branch_enable(&susfs_has_sus_path_rules);
 	SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
 				info.target_pathname, inode->i_ino, inode->i_mapping->flags);
 	info.err = 0;
@@ -178,6 +183,8 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		}
 	}
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		static_branch_enable(&susfs_has_sus_path_rules);
 	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
 		static_branch_enable(&susfs_has_sus_path_loop);
 	mutex_unlock(&susfs_mutex_lock_sus_path);
@@ -247,6 +254,9 @@ bool susfs_is_inode_sus_path(struct inode *inode)
 #endif
 {
 	struct fuse_inode *fi = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		return false;
 	if (!susfs_is_current_proc_umounted_app()) {
 		return false;
 	}
