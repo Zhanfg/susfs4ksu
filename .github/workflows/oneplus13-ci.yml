@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "vendor/oneplus13-sm8750-a16"
+      - "vendor/oneplus13-sm8750-a16-events"
     paths:
       - "kernel_patches/**"
       - "tools/**"
