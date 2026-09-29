@@ -1,0 +1,140 @@
+name: SUSFS full kernel CI
+
+on:
+  push:
+    branches:
+      - "modernize/build-pipeline"
+      - "next-dev"
+      - "next"
+    paths:
+      - "kernel_patches/**"
+      - "tools/susfs-patchctl.sh"
+      - ".github/workflows/kernel-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: susfs-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  AOSP_BASELINE_REF: android16-6.12-2026-06_r29
+  KSU_BASELINE: 623eba3e092b911a3a7389b7d87622a5835d2f3a
+  CCACHE_DIR: /home/runner/.cache/ccache/susfs-6.12
+  CCACHE_MAXSIZE: 1200M
+
+jobs:
+  build-gki-612:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v4
+
+      - name: Install kernel build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends             bc bison flex libssl-dev libelf-dev dwarves ccache
+
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache/susfs-6.12
+          key: susfs-kernel-ccache-${{ runner.os }}-6.12-${{ github.sha }}
+          restore-keys: |
+            susfs-kernel-ccache-${{ runner.os }}-6.12-
+
+      - name: Clone pinned kernel and KernelSU
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/integration"
+
+          git clone             --depth=1             --filter=blob:none             --branch "$AOSP_BASELINE_REF"             https://android.googlesource.com/kernel/common             "$RUNNER_TEMP/integration/common"
+
+          git init "$RUNNER_TEMP/integration/KernelSU"
+          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin https://github.com/tiann/KernelSU.git
+          git -C "$RUNNER_TEMP/integration/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
+          git -C "$RUNNER_TEMP/integration/KernelSU" checkout --detach FETCH_HEAD
+
+      - name: Apply SUSFS patchset
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tools/susfs-patchctl.sh apply             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+
+      - name: Integrate KernelSU into kernel tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/integration/common"
+          ksu="$RUNNER_TEMP/integration/KernelSU"
+
+          ln -sfn ../../KernelSU/kernel "$kernel/drivers/kernelsu"
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel/drivers/Makefile"             || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$kernel/drivers/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"             || sed -i '/^endmenu/i\source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"
+
+          test -f "$kernel/drivers/kernelsu/Kconfig"
+          test -f "$kernel/fs/susfs.c"
+          test -f "$kernel/include/linux/susfs.h"
+
+      - name: Configure GKI with all SUSFS features
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/integration/common"
+          out="$RUNNER_TEMP/out"
+
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
+
+          "$kernel/scripts/config" --file "$out/.config"             -e KSU             -e KSU_SUSFS             -e KSU_SUSFS_SUS_PATH             -e KSU_SUSFS_SUS_MOUNT             -e KSU_SUSFS_SUS_KSTAT             -e KSU_SUSFS_SPOOF_UNAME             -e KSU_SUSFS_ENABLE_LOG             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG             -e KSU_SUSFS_OPEN_REDIRECT             -e KSU_SUSFS_SUS_MAP
+
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
+
+          for cfg in             CONFIG_KSU=y             CONFIG_KSU_SUSFS=y             CONFIG_KSU_SUSFS_SUS_PATH=y             CONFIG_KSU_SUSFS_SUS_MOUNT=y             CONFIG_KSU_SUSFS_SUS_KSTAT=y             CONFIG_KSU_SUSFS_OPEN_REDIRECT=y             CONFIG_KSU_SUSFS_SUS_MAP=y; do
+            grep -q "^$cfg$" "$out/.config"
+          done
+
+      - name: Build complete arm64 Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/integration/common"
+          out="$RUNNER_TEMP/out"
+
+          mkdir -p "$CCACHE_DIR"
+          ccache --max-size "$CCACHE_MAXSIZE"
+          ccache --zero-stats
+
+          export KBUILD_BUILD_USER=susfs-ci
+          export KBUILD_BUILD_HOST=github
+          export KBUILD_BUILD_TIMESTAMP='Thu Jan  1 00:00:00 UTC 1970'
+
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          if [ "$jobs" -gt 4 ]; then jobs=4; fi
+
+          make -C "$kernel"             O="$out"             ARCH=arm64             LLVM=1             CC="ccache clang"             HOSTCC="ccache clang"             -j"$jobs"             Image
+
+          test -s "$out/arch/arm64/boot/Image"
+          ccache --show-stats
+
+          {
+            echo "### Full kernel build"
+            echo "- Android common: $AOSP_BASELINE_REF"
+            echo "- KernelSU: $KSU_BASELINE"
+            echo "- Image bytes: $(stat -c %s "$out/arch/arm64/boot/Image")"
+            echo "- SHA256: $(sha256sum "$out/arch/arm64/boot/Image" | awk '{print $1}')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload kernel Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs-next-gki-android16-6.12-${{ github.sha }}
+          path: ${{ runner.temp }}/out/arch/arm64/boot/Image
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
