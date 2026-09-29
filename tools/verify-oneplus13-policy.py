@@ -110,6 +110,11 @@ def main() -> int:
         "FUSE-BPF backing mmap mark",
     )
     require(
+        core,
+        ".free_mark = susfs_free_fsnotify_mark",
+        "fsnotify mark lifetime finalizer",
+    )
+    require(
         ksu_effective,
         "!susfs_is_sus_path_loop_active() || work_pending(&susfs_extra_works)",
         "empty dynamic-path workqueue suppression",
