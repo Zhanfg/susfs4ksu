@@ -38,6 +38,22 @@ mapping so passthrough/backing operations do not bypass the intended state.
 This must remain conditional on `CONFIG_FUSE_BPF` and a non-NULL backing
 inode, so generic 6.6 behavior is unchanged.
 
+
+### 1.1. Do not bit-propagate SUS_KSTAT blindly
+
+`SUS_PATH` can safely propagate its address-space flag to a FUSE-BPF
+`backing_inode` because the decision is local to the inode/mapping flag.
+
+`SUS_KSTAT` is different: its spoof table is keyed by inode/device identity and
+tracks whether the entry is FUSE. Marking only the backing inode mapping would
+make the backing path enter the SUS_KSTAT path with a different `(ino, dev,
+is_fuse)` identity and then fail to find the original FUSE hash entry.
+
+Therefore this lane intentionally does **not** copy `AS_FLAGS_SUS_KSTAT` to the
+backing inode. A future implementation must create and maintain an explicit
+backing-identity alias/secondary entry, including update/removal lifetime rules,
+rather than adding a standalone bit.
+
 ### 2. Reduce app-spawn work
 
 Keep the generic SUSFS Next static-key optimization: when no dynamic
