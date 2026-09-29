@@ -341,6 +341,7 @@ out_copy_to_user:
 /* sus_kstat */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 static DEFINE_MUTEX(susfs_mutex_lock_sus_kstat);
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_kstat_rules);
 #define SUSFS_KSTAT_HASH_BITS 10
 static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, SUSFS_KSTAT_HASH_BITS);
 
@@ -482,6 +483,8 @@ void susfs_add_sus_kstat(void __user **user_info) {
 #endif
 			hash_del_rcu(&tmp_entry->node);
 			hash_add_rcu(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
+			if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+				static_branch_enable(&susfs_has_sus_kstat_rules);
 			mutex_unlock(&susfs_mutex_lock_sus_kstat);
 			synchronize_rcu();
 			kfree(tmp_entry);
@@ -520,6 +523,8 @@ void susfs_add_sus_kstat(void __user **user_info) {
 			new_entry->info.spoofed_blksize, new_entry->info.spoofed_blocks, new_entry->spoofed_mnt_id);
 #endif
 	hash_add_rcu(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		static_branch_enable(&susfs_has_sus_kstat_rules);
 	mutex_unlock(&susfs_mutex_lock_sus_kstat);
 	info.err = 0;
 out_copy_to_user:
@@ -590,6 +595,8 @@ out_copy_to_user:
 __attribute__((hot)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse) {
 	struct fuse_inode *fi = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return false;
 	if (!inode)
 		return false;
 	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
@@ -616,6 +623,9 @@ __attribute__((hot)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *ou
 void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask)
 {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 	struct fuse_inode *fi = NULL;
 	unsigned long target_ino = 0;
 	dev_t target_dev = 0;
@@ -680,6 +690,9 @@ out_spoof_kstat:
 
 void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, unsigned long *out_ino) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 	struct fuse_inode *fi = NULL;
 	unsigned long target_ino = 0;
 	dev_t target_dev = 0;
@@ -723,6 +736,9 @@ out_spoof_kstat:
 
 int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return -ENOENT;
 	struct inode *target_inode = inode;
 
 	if (*is_fuse)
@@ -939,6 +955,7 @@ void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 /* open_redirect */
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
+DEFINE_STATIC_KEY_FALSE(susfs_has_open_redirect_rules);
 #define SUSFS_OPEN_REDIRECT_HASH_BITS 10
 static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, SUSFS_OPEN_REDIRECT_HASH_BITS);
 DEFINE_SRCU(susfs_srcu_open_redirect);
@@ -1068,6 +1085,8 @@ void susfs_add_open_redirect(void __user **user_info) {
 			new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
 		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node, new_entry_target->target_ino);
 		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node, new_entry_redirected->target_ino);
+		if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+			static_branch_enable(&susfs_has_open_redirect_rules);
 		// we need to mark both target and redirected path inode just for spoofing readlink as well
 		set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 		set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
@@ -1086,6 +1105,8 @@ void susfs_add_open_redirect(void __user **user_info) {
 			new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
 	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node, new_entry_target->target_ino);
 	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node, new_entry_redirected->target_ino);
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		static_branch_enable(&susfs_has_open_redirect_rules);
 	// we need to mark both target and redirected path inode just for spoofing readlink as well
 	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
@@ -1106,7 +1127,11 @@ out_copy_to_user:
 struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
 	struct filename *new_filename = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return NULL;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (!entry->reversed_lookup_only &&
@@ -1150,7 +1175,11 @@ out_srcu_read_unlock:
 
 int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buffer, int buflen) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -ENOENT;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (entry->reversed_lookup_only &&
@@ -1178,7 +1207,11 @@ int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buf
 
 int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode, char *tmp_buf, int buflen) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -ENOENT;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (entry->reversed_lookup_only &&
@@ -1204,6 +1237,8 @@ int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode, char *tmp_bu
 int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char **out_spoofed_name) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -EINVAL;
 	if (!out_spoofed_name || *out_spoofed_name != NULL) {
 		SUSFS_LOGE("out_spoofed_name cannot be NULL and *out_spoofed_name has to be NULL\n");
 		return -EINVAL;
