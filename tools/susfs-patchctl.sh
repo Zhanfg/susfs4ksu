@@ -280,6 +280,68 @@ assert_source_safe() {
 
 KERNEL_STATE=""
 KSU_STATE=""
+TXN_DIR=""
+TXN_ACTIVE=0
+TXN_COMMITTED=0
+kernel_applied_now=0
+ksu_applied_now=0
+
+backup_sources() {
+	TXN_DIR="$(mktemp -d)"
+	local src dst index=0
+	while IFS='|' read -r src dst; do
+		index=$((index + 1))
+		if [ -e "$dst" ]; then
+			cp -a "$dst" "$TXN_DIR/source-$index"
+		else
+			: > "$TXN_DIR/source-$index.missing"
+		fi
+	done < <(source_pairs)
+	TXN_ACTIVE=1
+}
+
+restore_sources() {
+	[ "$TXN_ACTIVE" -eq 1 ] || return 0
+	local src dst index=0
+	while IFS='|' read -r src dst; do
+		index=$((index + 1))
+		if [ -f "$TXN_DIR/source-$index.missing" ]; then
+			rm -f "$dst"
+		elif [ -e "$TXN_DIR/source-$index" ]; then
+			mkdir -p "$(dirname "$dst")"
+			cp -a "$TXN_DIR/source-$index" "$dst"
+		fi
+	done < <(source_pairs)
+}
+
+rollback_on_exit() {
+	local rc=$?
+	trap - EXIT INT TERM
+
+	if [ "$TXN_ACTIVE" -eq 1 ] && [ "$TXN_COMMITTED" -eq 0 ]; then
+		echo "[!] patch transaction failed; restoring pre-apply state" >&2
+		restore_sources
+		if [ "$ksu_applied_now" -eq 1 ]; then
+			git -C "$KSU_TREE" apply --reverse "$KSU_PATCH" >/dev/null 2>&1 || 				echo "[!] warning: KernelSU rollback failed" >&2
+		fi
+		if [ "$kernel_applied_now" -eq 1 ]; then
+			git -C "$KERNEL_TREE" apply --reverse "$KERNEL_PATCH" >/dev/null 2>&1 || 				echo "[!] warning: kernel rollback failed" >&2
+		fi
+	fi
+
+	[ -z "$TXN_DIR" ] || rm -rf "$TXN_DIR"
+	exit "$rc"
+}
+
+verify_post_apply() {
+	[ "$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")" = "applied" ] || 		die "post-apply verification failed: kernel patch is not fully applied"
+	[ "$(patch_state "$KSU_TREE" "$KSU_PATCH")" = "applied" ] || 		die "post-apply verification failed: KernelSU patch is not fully applied"
+
+	local src dst
+	while IFS='|' read -r src dst; do
+		[ -f "$dst" ] && cmp -s "$src" "$dst" || 			die "post-apply verification failed: canonical source mismatch: $dst"
+	done < <(source_pairs)
+}
 
 preflight() {
 	verify_manifest_version
@@ -326,9 +388,8 @@ case "$MODE" in
 		;;
 	apply)
 		preflight
-
-		kernel_applied_now=0
-		ksu_applied_now=0
+		backup_sources
+		trap rollback_on_exit EXIT INT TERM
 
 		if [ "$KERNEL_STATE" = "ready" ]; then
 			info "applying kernel patch"
@@ -338,13 +399,7 @@ case "$MODE" in
 
 		if [ "$KSU_STATE" = "ready" ]; then
 			info "applying KernelSU patch"
-			if ! git -C "$KSU_TREE" apply --whitespace=nowarn "$KSU_PATCH"; then
-				if [ "$kernel_applied_now" -eq 1 ]; then
-					echo "[!] KernelSU apply failed; rolling back kernel patch" >&2
-					git -C "$KERNEL_TREE" apply --reverse "$KERNEL_PATCH" || true
-				fi
-				die "KernelSU patch apply failed"
-			fi
+			git -C "$KSU_TREE" apply --whitespace=nowarn "$KSU_PATCH"
 			ksu_applied_now=1
 		fi
 
@@ -356,7 +411,10 @@ case "$MODE" in
 			install -m 0644 "$src" "$dst"
 		done < <(source_pairs)
 
-		ok "SUSFS patchset applied"
+		verify_post_apply
+		TXN_COMMITTED=1
+
+		ok "SUSFS patchset applied and verified"
 		echo "kernel_patch=$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
 		echo "kernelsu_patch=$(patch_state "$KSU_TREE" "$KSU_PATCH")"
 		;;
