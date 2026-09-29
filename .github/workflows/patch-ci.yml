@@ -32,6 +32,7 @@ jobs:
       version: ${{ steps.manifest.outputs.version }}
       kernel_repo: ${{ steps.manifest.outputs.kernel_repo }}
       kernel_baseline: ${{ steps.manifest.outputs.kernel_baseline }}
+      kernel_baseline_commit: ${{ steps.manifest.outputs.kernel_baseline_commit }}
       kernel_tracking: ${{ steps.manifest.outputs.kernel_tracking }}
       kernel_patch: ${{ steps.manifest.outputs.kernel_patch }}
       ksu_repo: ${{ steps.manifest.outputs.ksu_repo }}
@@ -54,6 +55,7 @@ jobs:
           print(f"version={data['susfs_version']}")
           print(f"kernel_repo={data['kernel']['repository']}")
           print(f"kernel_baseline={data['kernel']['baseline_ref']}")
+          print(f"kernel_baseline_commit={data['kernel']['baseline_commit']}")
           print(f"kernel_tracking={data['kernel']['tracking_ref']}")
           print(f"kernel_patch={data['patches']['kernel']}")
           print(f"ksu_repo={data['kernelsu']['repository']}")
@@ -87,7 +89,7 @@ jobs:
       PATCHSET_LANE: ${{ needs.syntax.outputs.lane }}
       KERNEL_REPO: ${{ needs.syntax.outputs.kernel_repo }}
       KERNEL_REF: ${{ needs.syntax.outputs.kernel_baseline }}
-      KERNEL_HISTORY_REF: ${{ needs.syntax.outputs.kernel_tracking }}
+      KERNEL_COMMIT: ${{ needs.syntax.outputs.kernel_baseline_commit }}
       KERNEL_PATCH: ${{ needs.syntax.outputs.kernel_patch }}
       KSU_REPO: ${{ needs.syntax.outputs.ksu_repo }}
       KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
@@ -117,15 +119,8 @@ jobs:
             git -C "$common" sparse-checkout set --no-cone
           git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_REF"
           baseline_head="$(git -C "$common" rev-parse FETCH_HEAD)"
-          git -C "$common" fetch \
-            --shallow-since='2026-06-01T00:00:00Z' \
-            --filter=blob:none \
-            origin "$KERNEL_HISTORY_REF"
+          test "$baseline_head" = "$KERNEL_COMMIT"
           git -C "$common" checkout --detach "$baseline_head"
-
-          python3 tools/hydrate_patch_bases.py \
-            --repo "$common" \
-            --patch "$KERNEL_PATCH"
 
           {
             echo "### Pinned patch baseline"
@@ -151,6 +146,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/susfs-patchctl.sh check \
+            --require-direct \
             --kernel-tree "$RUNNER_TEMP/integration/common" \
             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
@@ -159,6 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/susfs-patchctl.sh apply \
+            --require-direct \
             --kernel-tree "$RUNNER_TEMP/integration/common" \
             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
@@ -176,6 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/susfs-patchctl.sh apply \
+            --require-direct \
             --kernel-tree "$RUNNER_TEMP/integration/common" \
             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
