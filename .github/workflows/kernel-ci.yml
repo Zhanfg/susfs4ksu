@@ -100,6 +100,7 @@ jobs:
 
             cmake -S "$src" -B "$build" -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DGIT_SUBMODULE=OFF \
               -DBUILD_SHARED_LIBS=OFF \
               -DCMAKE_INSTALL_PREFIX="$PAHOLE_PREFIX"
             cmake --build "$build" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
