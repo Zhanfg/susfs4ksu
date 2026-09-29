@@ -46,6 +46,12 @@ DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
+
+bool susfs_is_sus_path_loop_active(void)
+{
+	return static_branch_unlikely(&susfs_has_sus_path_loop);
+}
+
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
 void susfs_add_sus_path(void __user **user_info) {
@@ -139,7 +145,7 @@ out_copy_to_user:
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
 
-	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
+	if (!susfs_is_sus_path_loop_active())
 		return;
 	struct path path;
 	struct inode *inode;
