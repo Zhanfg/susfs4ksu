@@ -4,10 +4,10 @@ PATH=/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH
 MODDIR=${0%/*}
 CONFIG_FILE="${SUSFS_CONFIG:-${MODDIR}/config/default.conf}"
 RUNTIME_DIR=/dev/.susfs4ksu
-SUSFS_BIN=/data/adb/ksu/bin/ksu_susfs
+SUSFS_BIN="${SUSFS_BIN:-/data/adb/ksu/bin/ksu_susfs}"
 
 CONTROL_BACKEND=
-KSUD_BIN=
+KSUD_BIN="${SUSFS_KSUD_BIN:-}"
 
 log_msg() {
 	echo "susfs4ksu: $*" >&2
@@ -18,7 +18,9 @@ probe_backend() {
 		return 0
 	fi
 
-	KSUD_BIN="$(command -v ksud 2>/dev/null)"
+	if [ -z "$KSUD_BIN" ]; then
+		KSUD_BIN="$(command -v ksud 2>/dev/null)"
+	fi
 	if [ -n "$KSUD_BIN" ] && "$KSUD_BIN" susfs show version >/dev/null 2>&1; then
 		CONTROL_BACKEND=ksud-susfs
 		return 0
@@ -122,6 +124,11 @@ run_stage_once() {
 	marker="$RUNTIME_DIR/${stage}.done"
 
 	[ -e "$marker" ] && return 0
+
+	probe_backend || {
+		log_msg "cannot apply $stage: no compatible backend"
+		return 127
+	}
 
 	case "$stage" in
 		post-fs-data) apply_post_fs_data ;;
