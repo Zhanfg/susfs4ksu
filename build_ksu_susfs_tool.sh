@@ -6,15 +6,15 @@ PROJECT_DIR="$ROOT_DIR/ksu_susfs"
 BUILD_ROOT="${SUSFS_BUILD_DIR:-$PROJECT_DIR/.build}"
 OBJ_DIR="$BUILD_ROOT/obj"
 LIBS_DIR="$BUILD_ROOT/libs"
-OUTPUT="${SUSFS_TOOL_OUTPUT:-$ROOT_DIR/ksu_module_susfs/tools/ksu_susfs_arm64}"
+OUTPUT="${SUSFS_TOOL_OUTPUT:-$BUILD_ROOT/dist/ksu_susfs_arm64}"
 JOBS="${JOBS:-}"
 
 usage() {
 	cat <<'EOF'
 Usage: ./build_ksu_susfs_tool.sh [--clean] [--jobs N] [--output PATH]
 
-Incremental build is the default. Object files are kept under
-ksu_susfs/.build so repeated builds only rebuild changed sources.
+Incremental build is the default. Object files and standalone build outputs stay
+under ksu_susfs/.build so compiling never modifies tracked module sources.
 
 Environment:
   ANDROID_NDK_HOME / NDK_HOME   preferred pinned NDK root
