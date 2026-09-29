@@ -12,6 +12,8 @@ on:
       - "tools/verify_unified_diff.py"
       - ".github/workflows/patch-ci.yml"
   workflow_dispatch:
+  schedule:
+    - cron: "41 3 * * *"
 
 concurrency:
   group: susfs-patch-${{ github.ref }}
@@ -20,35 +22,70 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  AOSP_BASELINE_REF: android16-6.12-2026-06_r29
-  AOSP_TRACKING_REF: android16-6.12
-  KSU_BASELINE: 623eba3e092b911a3a7389b7d87622a5835d2f3a
-
 jobs:
   syntax:
     runs-on: ubuntu-latest
+    outputs:
+      lane: ${{ steps.manifest.outputs.lane }}
+      version: ${{ steps.manifest.outputs.version }}
+      kernel_repo: ${{ steps.manifest.outputs.kernel_repo }}
+      kernel_baseline: ${{ steps.manifest.outputs.kernel_baseline }}
+      kernel_tracking: ${{ steps.manifest.outputs.kernel_tracking }}
+      kernel_patch: ${{ steps.manifest.outputs.kernel_patch }}
+      ksu_repo: ${{ steps.manifest.outputs.ksu_repo }}
+      ksu_baseline: ${{ steps.manifest.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v4
 
+      - name: Load patchset manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path("kernel_patches/patchset.json").read_text(encoding="utf-8"))
+          print(f"lane={data['lane']}")
+          print(f"version={data['susfs_version']}")
+          print(f"kernel_repo={data['kernel']['repository']}")
+          print(f"kernel_baseline={data['kernel']['baseline_ref']}")
+          print(f"kernel_tracking={data['kernel']['tracking_ref']}")
+          print(f"kernel_patch={data['patches']['kernel']}")
+          print(f"ksu_repo={data['kernelsu']['repository']}")
+          print(f"ksu_baseline={data['kernelsu']['baseline_commit']}")
+          PY
+
       - name: Validate patch tooling and unified-diff structure
         shell: bash
+        env:
+          PATCHSET_VERSION: ${{ steps.manifest.outputs.version }}
         run: |
           set -euo pipefail
           bash -n tools/susfs-patchctl.sh
           tools/susfs-patchctl.sh --help >/dev/null
           python3 tools/verify_unified_diff.py
+
           for patch in kernel_patches/*.patch kernel_patches/KernelSU/*.patch; do
             [ -f "$patch" ] || continue
             git apply --numstat "$patch" >/dev/null
           done
-          grep -q '#define SUSFS_VERSION "v2.3.0"' kernel_patches/include/linux/susfs.h
+
+          grep -q "#define SUSFS_VERSION \"$PATCHSET_VERSION\"" kernel_patches/include/linux/susfs.h
 
   patch-baseline:
     needs: syntax
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PATCHSET_LANE: ${{ needs.syntax.outputs.lane }}
+      KERNEL_REPO: ${{ needs.syntax.outputs.kernel_repo }}
+      KERNEL_REF: ${{ needs.syntax.outputs.kernel_baseline }}
+      KERNEL_PATCH: ${{ needs.syntax.outputs.kernel_patch }}
+      KSU_REPO: ${{ needs.syntax.outputs.ksu_repo }}
+      KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v4
@@ -57,51 +94,64 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/integration"
-          git clone             --depth=1             --filter=blob:none             --no-checkout             --branch "$AOSP_BASELINE_REF"             https://android.googlesource.com/kernel/common             "$RUNNER_TEMP/integration/common"
+          common="$RUNNER_TEMP/integration/common"
+          mkdir -p "$common"
 
-          kernel_patch="$(find kernel_patches -maxdepth 1 -type f -name '50_add_susfs*.patch' -print -quit)"
-          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$kernel_patch"             > "$RUNNER_TEMP/kernel-sparse.txt"
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$KERNEL_PATCH" \
+            > "$RUNNER_TEMP/kernel-sparse.txt"
           {
             echo "/Makefile"
             echo "/fs/"
             echo "/include/linux/"
           } >> "$RUNNER_TEMP/kernel-sparse.txt"
 
-          git -C "$RUNNER_TEMP/integration/common" sparse-checkout init --no-cone
-          xargs -a "$RUNNER_TEMP/kernel-sparse.txt"             git -C "$RUNNER_TEMP/integration/common" sparse-checkout set --no-cone
-          git -C "$RUNNER_TEMP/integration/common" checkout
+          git -C "$common" init
+          git -C "$common" remote add origin "$KERNEL_REPO"
+          git -C "$common" sparse-checkout init --no-cone
+          xargs -a "$RUNNER_TEMP/kernel-sparse.txt" \
+            git -C "$common" sparse-checkout set --no-cone
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_REF"
+          git -C "$common" checkout --detach FETCH_HEAD
 
           {
             echo "### Pinned patch baseline"
-            echo "- Android common: $AOSP_BASELINE_REF"
-            echo "- Resolved SHA: $(git -C "$RUNNER_TEMP/integration/common" rev-parse HEAD)"
+            echo "- Lane: $PATCHSET_LANE"
+            echo "- Android common: $KERNEL_REF"
+            echo "- Resolved SHA: $(git -C "$common" rev-parse HEAD)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout pinned KernelSU baseline
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/integration/KernelSU"
-          git -C "$RUNNER_TEMP/integration/KernelSU" init
-          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin https://github.com/tiann/KernelSU.git
-          git -C "$RUNNER_TEMP/integration/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
-          git -C "$RUNNER_TEMP/integration/KernelSU" checkout --detach FETCH_HEAD
-          test "$(git -C "$RUNNER_TEMP/integration/KernelSU" rev-parse HEAD)" = "$KSU_BASELINE"
+          ksu="$RUNNER_TEMP/integration/KernelSU"
+          mkdir -p "$ksu"
+          git -C "$ksu" init
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_BASELINE"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_BASELINE"
 
       - name: Preflight pinned patchset
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh check             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+          tools/susfs-patchctl.sh check \
+            --kernel-tree "$RUNNER_TEMP/integration/common" \
+            --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
       - name: Apply pinned patchset
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh apply             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+          tools/susfs-patchctl.sh apply \
+            --kernel-tree "$RUNNER_TEMP/integration/common" \
+            --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
-          tools/susfs-patchctl.sh status             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"             | tee "$RUNNER_TEMP/status.txt"
+          tools/susfs-patchctl.sh status \
+            --kernel-tree "$RUNNER_TEMP/integration/common" \
+            --ksu-tree "$RUNNER_TEMP/integration/KernelSU" \
+            | tee "$RUNNER_TEMP/status.txt"
 
           grep -q '^kernel_patch=applied$' "$RUNNER_TEMP/status.txt"
           grep -q '^kernelsu_patch=applied$' "$RUNNER_TEMP/status.txt"
@@ -111,48 +161,76 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh apply             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+          tools/susfs-patchctl.sh apply \
+            --kernel-tree "$RUNNER_TEMP/integration/common" \
+            --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
   tracking-preflight:
     needs: syntax
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 20
+    env:
+      PATCHSET_LANE: ${{ needs.syntax.outputs.lane }}
+      KERNEL_REPO: ${{ needs.syntax.outputs.kernel_repo }}
+      KERNEL_REF: ${{ needs.syntax.outputs.kernel_tracking }}
+      KERNEL_PATCH: ${{ needs.syntax.outputs.kernel_patch }}
+      KSU_REPO: ${{ needs.syntax.outputs.ksu_repo }}
+      KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v4
 
-      - name: Sparse checkout current Android common
+      - name: Sparse checkout moving Android common
         shell: bash
         run: |
           set -euo pipefail
-          git clone             --depth=1             --filter=blob:none             --no-checkout             --branch "$AOSP_TRACKING_REF"             https://android.googlesource.com/kernel/common             "$RUNNER_TEMP/common"
+          common="$RUNNER_TEMP/common"
+          mkdir -p "$common"
 
-          kernel_patch="$(find kernel_patches -maxdepth 1 -type f -name '50_add_susfs*.patch' -print -quit)"
-          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$kernel_patch"             > "$RUNNER_TEMP/kernel-sparse.txt"
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$KERNEL_PATCH" \
+            > "$RUNNER_TEMP/kernel-sparse.txt"
           {
             echo "/Makefile"
             echo "/fs/"
             echo "/include/linux/"
           } >> "$RUNNER_TEMP/kernel-sparse.txt"
 
-          git -C "$RUNNER_TEMP/common" sparse-checkout init --no-cone
-          xargs -a "$RUNNER_TEMP/kernel-sparse.txt"             git -C "$RUNNER_TEMP/common" sparse-checkout set --no-cone
-          git -C "$RUNNER_TEMP/common" checkout
+          git -C "$common" init
+          git -C "$common" remote add origin "$KERNEL_REPO"
+          git -C "$common" sparse-checkout init --no-cone
+          xargs -a "$RUNNER_TEMP/kernel-sparse.txt" \
+            git -C "$common" sparse-checkout set --no-cone
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_REF"
+          git -C "$common" checkout --detach FETCH_HEAD
 
-          echo "Tracking Android SHA: $(git -C "$RUNNER_TEMP/common" rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Moving-kernel compatibility probe"
+            echo "- Lane: $PATCHSET_LANE"
+            echo "- Tracking ref: $KERNEL_REF"
+            echo "- Resolved SHA: $(git -C "$common" rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout pinned KernelSU baseline
         shell: bash
         run: |
           set -euo pipefail
-          git init "$RUNNER_TEMP/KernelSU"
-          git -C "$RUNNER_TEMP/KernelSU" remote add origin https://github.com/tiann/KernelSU.git
-          git -C "$RUNNER_TEMP/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
-          git -C "$RUNNER_TEMP/KernelSU" checkout --detach FETCH_HEAD
+          ksu="$RUNNER_TEMP/KernelSU"
+          mkdir -p "$ksu"
+          git -C "$ksu" init
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_BASELINE"
+          git -C "$ksu" checkout --detach FETCH_HEAD
 
       - name: Probe moving-kernel compatibility
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh check             --kernel-tree "$RUNNER_TEMP/common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+          if tools/susfs-patchctl.sh check \
+            --kernel-tree "$RUNNER_TEMP/common" \
+            --ksu-tree "$RUNNER_TEMP/KernelSU"; then
+            echo "Tracking ref remains patch-compatible." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Tracking ref has drifted; stable pinned baseline remains authoritative." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
