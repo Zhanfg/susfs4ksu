@@ -5,8 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="status"
 KERNEL_TREE=""
 KSU_TREE=""
+MANIFEST="$ROOT_DIR/kernel_patches/patchset.json"
 KERNEL_PATCH=""
-KSU_PATCH="$ROOT_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+KSU_PATCH=""
+MANIFEST_LANE=""
+MANIFEST_VERSION=""
+MANIFEST_KERNEL_VERSION=""
+MANIFEST_KERNEL_PATCH=""
+MANIFEST_KSU_PATCH=""
 ALLOW_DIRTY=0
 ALLOW_VERSION_MISMATCH=0
 REPLACE_SOURCE=0
@@ -19,8 +25,9 @@ Usage:
   tools/susfs-patchctl.sh apply  --kernel-tree PATH --ksu-tree PATH [options]
 
 Options:
-  --kernel-patch PATH          override auto-selected kernel patch
-  --ksu-patch PATH             override KernelSU patch
+  --manifest PATH              patchset manifest (default: kernel_patches/patchset.json)
+  --kernel-patch PATH          override manifest/auto-selected kernel patch
+  --ksu-patch PATH             override manifest KernelSU patch
   --allow-dirty                allow touched target files to have local changes
   --allow-version-mismatch     skip kernel major.minor filename check
   --replace-source             replace existing fs/susfs.c + SUSFS headers if different
@@ -57,6 +64,10 @@ fi
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
+		--manifest)
+			MANIFEST="$2"
+			shift 2
+			;;
 		--kernel-tree)
 			KERNEL_TREE="$2"
 			shift 2
@@ -95,6 +106,49 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+load_manifest() {
+	if [ ! -f "$MANIFEST" ]; then
+		return 0
+	fi
+
+	command -v python3 >/dev/null 2>&1 || die "python3 is required to read patchset manifest: $MANIFEST"
+
+	eval "$(
+		python3 - "$MANIFEST" <<'PY'
+import json
+import pathlib
+import shlex
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+
+def emit(name, value):
+    if value is None:
+        value = ""
+    print(f"{name}={shlex.quote(str(value))}")
+
+emit("MANIFEST_LANE", data.get("lane"))
+emit("MANIFEST_VERSION", data.get("susfs_version"))
+emit("MANIFEST_KERNEL_VERSION", data.get("kernel", {}).get("major_minor"))
+emit("MANIFEST_KERNEL_PATCH", data.get("patches", {}).get("kernel"))
+emit("MANIFEST_KSU_PATCH", data.get("patches", {}).get("kernelsu"))
+PY
+	)"
+}
+
+load_manifest
+
+if [ -z "$KERNEL_PATCH" ] && [ -n "$MANIFEST_KERNEL_PATCH" ]; then
+	KERNEL_PATCH="$ROOT_DIR/$MANIFEST_KERNEL_PATCH"
+fi
+if [ -z "$KSU_PATCH" ] && [ -n "$MANIFEST_KSU_PATCH" ]; then
+	KSU_PATCH="$ROOT_DIR/$MANIFEST_KSU_PATCH"
+fi
+if [ -z "$KSU_PATCH" ]; then
+	KSU_PATCH="$ROOT_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+fi
+
 [ -n "$KERNEL_TREE" ] || die "--kernel-tree is required"
 [ -n "$KSU_TREE" ] || die "--ksu-tree is required"
 [ -d "$KERNEL_TREE/.git" ] || git -C "$KERNEL_TREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "kernel tree is not a git worktree: $KERNEL_TREE"
@@ -118,6 +172,10 @@ select_kernel_patch() {
 
 select_kernel_patch
 
+if [ -n "$MANIFEST_LANE" ]; then
+	info "patchset lane: $MANIFEST_LANE"
+fi
+
 kernel_version() {
 	local makefile="$KERNEL_TREE/Makefile"
 	[ -f "$makefile" ] || return 1
@@ -129,7 +187,19 @@ kernel_version() {
 }
 
 expected_version() {
+	if [ -n "$MANIFEST_KERNEL_VERSION" ]; then
+		printf '%s\n' "$MANIFEST_KERNEL_VERSION"
+		return
+	fi
 	basename "$KERNEL_PATCH" | sed -nE 's/.*-([0-9]+\.[0-9]+)\.patch$/\1/p'
+}
+
+verify_manifest_version() {
+	[ -n "$MANIFEST_VERSION" ] || return 0
+	local actual
+	actual="$(sed -nE 's/^#define SUSFS_VERSION "([^"]+)"/\1/p' "$ROOT_DIR/kernel_patches/include/linux/susfs.h" | head -n1)"
+	[ -n "$actual" ] || die "cannot read SUSFS_VERSION from canonical header"
+	[ "$actual" = "$MANIFEST_VERSION" ] || die "manifest/header SUSFS version mismatch: manifest=$MANIFEST_VERSION header=$actual"
 }
 
 verify_version() {
@@ -212,6 +282,7 @@ KERNEL_STATE=""
 KSU_STATE=""
 
 preflight() {
+	verify_manifest_version
 	verify_version
 
 	KERNEL_STATE="$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
@@ -241,6 +312,7 @@ preflight() {
 
 case "$MODE" in
 	status)
+		verify_manifest_version
 		verify_version
 		KERNEL_STATE="$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
 		KSU_STATE="$(patch_state "$KSU_TREE" "$KSU_PATCH")"
