@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODE="status"
+KERNEL_TREE=""
+KSU_TREE=""
+KERNEL_PATCH=""
+KSU_PATCH="$ROOT_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+ALLOW_DIRTY=0
+ALLOW_VERSION_MISMATCH=0
+REPLACE_SOURCE=0
+
+usage() {
+	cat <<'EOF'
+Usage:
+  tools/susfs-patchctl.sh status --kernel-tree PATH --ksu-tree PATH
+  tools/susfs-patchctl check  --kernel-tree PATH --ksu-tree PATH
+  tools/susfs-patchctl.sh apply  --kernel-tree PATH --ksu-tree PATH [options]
+
+Options:
+  --kernel-patch PATH          override auto-selected kernel patch
+  --ksu-patch PATH             override KernelSU patch
+  --allow-dirty                allow touched target files to have local changes
+  --allow-version-mismatch     skip kernel major.minor filename check
+  --replace-source             replace existing fs/susfs.c + SUSFS headers if different
+
+The apply command is preflight-first and idempotent:
+- both kernel and KernelSU patches are checked before mutation
+- already-applied patches are detected with reverse-check
+- a later patch failure rolls back a patch applied earlier in the same run
+- canonical SUSFS source files are copied only after both patch applications succeed
+EOF
+}
+
+die() {
+	echo "[-] $*" >&2
+	exit 1
+}
+
+info() {
+	echo "[*] $*"
+}
+
+ok() {
+	echo "[+] $*"
+}
+
+if [ "$#" -gt 0 ]; then
+	case "$1" in
+		status|check|apply)
+			MODE="$1"
+			shift
+			;;
+	esac
+fi
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--kernel-tree)
+			KERNEL_TREE="$2"
+			shift 2
+			;;
+		--ksu-tree)
+			KSU_TREE="$2"
+			shift 2
+			;;
+		--kernel-patch)
+			KERNEL_PATCH="$2"
+			shift 2
+			;;
+		--ksu-patch)
+			KSU_PATCH="$2"
+			shift 2
+			;;
+		--allow-dirty)
+			ALLOW_DIRTY=1
+			shift
+			;;
+		--allow-version-mismatch)
+			ALLOW_VERSION_MISMATCH=1
+			shift
+			;;
+		--replace-source)
+			REPLACE_SOURCE=1
+			shift
+			;;
+		-h|--help)
+			usage
+			exit 0
+			;;
+		*)
+			die "unknown argument: $1"
+			;;
+	esac
+done
+
+[ -n "$KERNEL_TREE" ] || die "--kernel-tree is required"
+[ -n "$KSU_TREE" ] || die "--ksu-tree is required"
+[ -d "$KERNEL_TREE/.git" ] || git -C "$KERNEL_TREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "kernel tree is not a git worktree: $KERNEL_TREE"
+[ -d "$KSU_TREE/.git" ] || git -C "$KSU_TREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "KernelSU tree is not a git worktree: $KSU_TREE"
+[ -f "$KSU_PATCH" ] || die "KernelSU patch not found: $KSU_PATCH"
+
+select_kernel_patch() {
+	if [ -n "$KERNEL_PATCH" ]; then
+		[ -f "$KERNEL_PATCH" ] || die "kernel patch not found: $KERNEL_PATCH"
+		return
+	fi
+
+	mapfile -t patches < <(find "$ROOT_DIR/kernel_patches" -maxdepth 1 -type f -name '50_add_susfs*.patch' -print | LC_ALL=C sort)
+	[ "${#patches[@]}" -eq 1 ] || {
+		printf '[-] expected exactly one kernel patch on this branch, found %d:\n' "${#patches[@]}" >&2
+		printf '    %s\n' "${patches[@]}" >&2
+		die "pass --kernel-patch explicitly"
+	}
+	KERNEL_PATCH="${patches[0]}"
+}
+
+select_kernel_patch
+
+kernel_version() {
+	local makefile="$KERNEL_TREE/Makefile"
+	[ -f "$makefile" ] || return 1
+	local major minor
+	major="$(awk -F= '/^VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$makefile")"
+	minor="$(awk -F= '/^PATCHLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$makefile")"
+	[ -n "$major" ] && [ -n "$minor" ] || return 1
+	printf '%s.%s\n' "$major" "$minor"
+}
+
+expected_version() {
+	basename "$KERNEL_PATCH" | sed -nE 's/.*-([0-9]+\.[0-9]+)\.patch$/\1/p'
+}
+
+verify_version() {
+	local actual expected
+	actual="$(kernel_version || true)"
+	expected="$(expected_version)"
+
+	[ -n "$actual" ] || die "cannot determine kernel VERSION/PATCHLEVEL from $KERNEL_TREE/Makefile"
+	info "kernel version: $actual"
+	[ -n "$expected" ] && info "patch target version: $expected"
+
+	if [ "$ALLOW_VERSION_MISMATCH" -eq 0 ] && [ -n "$expected" ] && [ "$actual" != "$expected" ]; then
+		die "kernel version mismatch: tree=$actual patch=$expected (use --allow-version-mismatch only after manual review)"
+	fi
+}
+
+patch_state() {
+	local tree="$1" patch="$2"
+	if git -C "$tree" apply --reverse --check "$patch" >/dev/null 2>&1; then
+		echo "applied"
+	elif git -C "$tree" apply --check "$patch" >/dev/null 2>&1; then
+		echo "ready"
+	else
+		echo "conflict"
+	fi
+}
+
+patch_paths() {
+	awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print p }' "$1"
+}
+
+assert_touched_files_clean() {
+	local tree="$1" patch="$2" label="$3"
+	[ "$ALLOW_DIRTY" -eq 1 ] && return 0
+
+	local dirty=0 path
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		if ! git -C "$tree" diff --quiet -- "$path" || ! git -C "$tree" diff --cached --quiet -- "$path"; then
+			echo "[-] $label target has local changes: $path" >&2
+			dirty=1
+		fi
+	done < <(patch_paths "$patch")
+
+	[ "$dirty" -eq 0 ] || die "refusing to patch dirty target files (use --allow-dirty after review)"
+}
+
+source_pairs() {
+	cat <<EOF
+$ROOT_DIR/kernel_patches/fs/susfs.c|$KERNEL_TREE/fs/susfs.c
+$ROOT_DIR/kernel_patches/include/linux/susfs.h|$KERNEL_TREE/include/linux/susfs.h
+$ROOT_DIR/kernel_patches/include/linux/susfs_def.h|$KERNEL_TREE/include/linux/susfs_def.h
+EOF
+}
+
+source_state() {
+	local src dst
+	while IFS='|' read -r src dst; do
+		if [ ! -f "$dst" ]; then
+			echo "missing  $dst"
+		elif cmp -s "$src" "$dst"; then
+			echo "current  $dst"
+		else
+			echo "different $dst"
+		fi
+	done < <(source_pairs)
+}
+
+assert_source_safe() {
+	local src dst
+	while IFS='|' read -r src dst; do
+		[ -f "$src" ] || die "canonical source missing: $src"
+		if [ -e "$dst" ] && ! cmp -s "$src" "$dst" && [ "$REPLACE_SOURCE" -eq 0 ]; then
+			die "existing SUSFS source differs: $dst (use --replace-source after review)"
+		fi
+	done < <(source_pairs)
+}
+
+KERNEL_STATE=""
+KSU_STATE=""
+
+preflight() {
+	verify_version
+
+	KERNEL_STATE="$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
+	KSU_STATE="$(patch_state "$KSU_TREE" "$KSU_PATCH")"
+
+	info "kernel patch: $KERNEL_STATE ($(basename "$KERNEL_PATCH"))"
+	info "KernelSU patch: $KSU_STATE ($(basename "$KSU_PATCH"))"
+	source_state | sed 's/^/[*] source: /'
+
+	[ "$KERNEL_STATE" != "conflict" ] || {
+		git -C "$KERNEL_TREE" apply --check "$KERNEL_PATCH" || true
+		die "kernel patch preflight failed"
+	}
+	[ "$KSU_STATE" != "conflict" ] || {
+		git -C "$KSU_TREE" apply --check "$KSU_PATCH" || true
+		die "KernelSU patch preflight failed"
+	}
+
+	assert_touched_files_clean "$KERNEL_TREE" "$KERNEL_PATCH" "kernel"
+	assert_touched_files_clean "$KSU_TREE" "$KSU_PATCH" "KernelSU"
+	assert_source_safe
+}
+
+case "$MODE" in
+	status)
+		verify_version
+		KERNEL_STATE="$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
+		KSU_STATE="$(patch_state "$KSU_TREE" "$KSU_PATCH")"
+		echo "kernel_patch=$KERNEL_STATE"
+		echo "kernelsu_patch=$KSU_STATE"
+		source_state
+		;;
+	check)
+		preflight
+		ok "patchset preflight passed; no files modified"
+		;;
+	apply)
+		preflight
+
+		kernel_applied_now=0
+		ksu_applied_now=0
+
+		if [ "$KERNEL_STATE" = "ready" ]; then
+			info "applying kernel patch"
+			git -C "$KERNEL_TREE" apply --whitespace=nowarn "$KERNEL_PATCH"
+			kernel_applied_now=1
+		fi
+
+		if [ "$KSU_STATE" = "ready" ]; then
+			info "applying KernelSU patch"
+			if ! git -C "$KSU_TREE" apply --whitespace=nowarn "$KSU_PATCH"; then
+				if [ "$kernel_applied_now" -eq 1 ]; then
+					echo "[!] KernelSU apply failed; rolling back kernel patch" >&2
+					git -C "$KERNEL_TREE" apply --reverse "$KERNEL_PATCH" || true
+				fi
+				die "KernelSU patch apply failed"
+			fi
+			ksu_applied_now=1
+		fi
+
+		while IFS='|' read -r src dst; do
+			mkdir -p "$(dirname "$dst")"
+			if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
+				continue
+			fi
+			install -m 0644 "$src" "$dst"
+		done < <(source_pairs)
+
+		ok "SUSFS patchset applied"
+		echo "kernel_patch=$(patch_state "$KERNEL_TREE" "$KERNEL_PATCH")"
+		echo "kernelsu_patch=$(patch_state "$KSU_TREE" "$KSU_PATCH")"
+		;;
+esac
