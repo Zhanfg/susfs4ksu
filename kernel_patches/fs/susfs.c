@@ -1268,10 +1268,28 @@ int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode, unsigned lo
 
 /* sus_map */
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+static inline void susfs_mark_fuse_sus_map(struct fuse_inode *fi)
+{
+	if (fi->inode.i_mapping &&
+	    !test_bit(AS_FLAGS_SUS_MAP, &fi->inode.i_mapping->flags))
+		set_bit(AS_FLAGS_SUS_MAP, &fi->inode.i_mapping->flags);
+#ifdef CONFIG_FUSE_BPF
+	/*
+	 * OnePlus 13's FUSE-BPF mmap path replaces vma->vm_file with the
+	 * backing file. Propagate SUS_MAP to the backing mapping so /proc/maps,
+	 * smaps, pagemap and remote-vm checks still observe the hidden mark.
+	 */
+	if (fi->backing_inode && fi->backing_inode->i_mapping &&
+	    !test_bit(AS_FLAGS_SUS_MAP, &fi->backing_inode->i_mapping->flags))
+		set_bit(AS_FLAGS_SUS_MAP, &fi->backing_inode->i_mapping->flags);
+#endif
+}
+
 void susfs_add_sus_map(void __user **user_info) {
 	struct st_susfs_sus_map info = {0};
 	struct path path;
 	struct inode *inode = NULL;
+	struct fuse_inode *fi = NULL;
 
 	if (copy_from_user(&info, (struct st_susfs_sus_map __user*)*user_info, sizeof(info))) {
 		info.err = -EFAULT;
@@ -1290,7 +1308,17 @@ void susfs_add_sus_map(void __user **user_info) {
 		info.err = -ENOENT;
 		goto out_path_put_path;
 	}
-	set_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags);
+	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
+		fi = get_fuse_inode(inode);
+		if (!fi || !fi->inode.i_mapping) {
+			SUSFS_LOGE("fi || fi->inode.i_mapping is NULL\n");
+			info.err = -ENOENT;
+			goto out_path_put_path;
+		}
+		susfs_mark_fuse_sus_map(fi);
+	} else if (!test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags)) {
+		set_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags);
+	}
 	SUSFS_LOGI("pathname: '%s', is flagged as AS_FLAGS_SUS_MAP\n", info.target_pathname);
 	info.err = 0;
 out_path_put_path:
