@@ -133,11 +133,33 @@ jobs:
 
           make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
 
-          "$kernel/scripts/config" --file "$out/.config"             -e KSU             -e KSU_SUSFS             -e KSU_SUSFS_SUS_PATH             -e KSU_SUSFS_SUS_MOUNT             -e KSU_SUSFS_SUS_KSTAT             -e KSU_SUSFS_SPOOF_UNAME             -e KSU_SUSFS_ENABLE_LOG             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG             -e KSU_SUSFS_OPEN_REDIRECT             -e KSU_SUSFS_SUS_MAP
+          "$kernel/scripts/config" --file "$out/.config" \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP \
+            -e LTO_CLANG \
+            -e LTO_CLANG_THIN
 
           make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
 
-          for cfg in             CONFIG_KSU=y             CONFIG_KSU_SUSFS=y             CONFIG_KSU_SUSFS_SUS_PATH=y             CONFIG_KSU_SUSFS_SUS_MOUNT=y             CONFIG_KSU_SUSFS_SUS_KSTAT=y             CONFIG_KSU_SUSFS_OPEN_REDIRECT=y             CONFIG_KSU_SUSFS_SUS_MAP=y; do
+          for cfg in \
+            CONFIG_KSU=y \
+            CONFIG_KSU_SUSFS=y \
+            CONFIG_KSU_SUSFS_SUS_PATH=y \
+            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+            CONFIG_KSU_SUSFS_SUS_KSTAT=y \
+            CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+            CONFIG_KSU_SUSFS_SUS_MAP=y \
+            CONFIG_LTO_CLANG=y \
+            CONFIG_LTO_CLANG_THIN=y; do
             grep -q "^$cfg$" "$out/.config"
           done
 
@@ -149,6 +171,9 @@ jobs:
           out="$RUNNER_TEMP/out"
 
           mkdir -p "$CCACHE_DIR"
+          export CCACHE_BASEDIR="$kernel"
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_COMPILERCHECK=content
           ccache --max-size "$CCACHE_MAXSIZE"
           ccache --zero-stats
 
@@ -159,7 +184,14 @@ jobs:
           jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
           if [ "$jobs" -gt 4 ]; then jobs=4; fi
 
-          make -C "$kernel"             O="$out"             ARCH=arm64             LLVM=1             CC="ccache clang"             HOSTCC="ccache clang"             -j"$jobs"             Image
+          make -C "$kernel" \
+            O="$out" \
+            ARCH=arm64 \
+            LLVM=1 \
+            CC="ccache clang" \
+            HOSTCC="ccache clang" \
+            -j"$jobs" \
+            Image
 
           test -s "$out/arch/arm64/boot/Image"
           ccache --show-stats
