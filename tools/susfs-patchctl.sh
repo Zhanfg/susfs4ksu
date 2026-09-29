@@ -16,6 +16,7 @@ MANIFEST_KSU_PATCH=""
 ALLOW_DIRTY=0
 ALLOW_VERSION_MISMATCH=0
 REPLACE_SOURCE=0
+REQUIRE_DIRECT=0
 
 usage() {
 	cat <<'EOF'
@@ -31,6 +32,7 @@ Options:
   --allow-dirty                allow touched target files to have local changes
   --allow-version-mismatch     skip kernel major.minor filename check
   --replace-source             replace existing fs/susfs.c + SUSFS headers if different
+  --require-direct              reject 3-way fallback; stable baselines must apply exactly
 
 The apply command is preflight-first and idempotent:
 - both kernel and KernelSU patches are checked before mutation
@@ -94,6 +96,10 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--replace-source)
 			REPLACE_SOURCE=1
+			shift
+			;;
+		--require-direct)
+			REQUIRE_DIRECT=1
 			shift
 			;;
 		-h|--help)
@@ -374,6 +380,11 @@ preflight() {
 
 	info "kernel patch: $KERNEL_STATE ($(basename "$KERNEL_PATCH"))"
 	info "KernelSU patch: $KSU_STATE ($(basename "$KSU_PATCH"))"
+
+	if [ "$REQUIRE_DIRECT" -eq 1 ]; then
+		[ "$KERNEL_STATE" != "ready-3way" ] || die "kernel patch needs 3-way fallback but --require-direct is set"
+		[ "$KSU_STATE" != "ready-3way" ] || die "KernelSU patch needs 3-way fallback but --require-direct is set"
+	fi
 	source_state | sed 's/^/[*] source: /'
 
 	[ "$KERNEL_STATE" != "conflict" ] || {
