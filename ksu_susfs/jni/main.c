@@ -85,6 +85,21 @@ int main(int argc, char *argv[])
 
 	pre_check(argc);
 
+	/*
+	 * Accept a ReSukiSU/ksud-style namespace in addition to the historical
+	 * flat ksu_susfs CLI:
+	 *
+	 *   ksu_susfs show status
+	 *   ksu_susfs susfs show status
+	 *
+	 * This keeps manager/automation command construction portable without
+	 * changing the existing command ABI.
+	 */
+	if (argc >= 3 && !strcmp(argv[1], "susfs")) {
+		argc--;
+		argv++;
+	}
+
 	ret = dispatch_command(argc, argv);
 	if (ret != -ENOENT)
 		return ret;
