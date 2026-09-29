@@ -78,20 +78,17 @@ jobs:
           restore-keys: |
             susfs-kernel-ccache-${{ runner.os }}-6.12-
 
-      - name: Checkout immutable kernel and KernelSU baselines
+      - name: Download immutable kernel archive and KernelSU baseline
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/integration"
 
           common="$RUNNER_TEMP/integration/common"
-          git init "$common"
-          git -C "$common" remote add origin "$KERNEL_REPO"
-          git -C "$common" fetch --depth=1 origin "$KERNEL_BASELINE_COMMIT"
-          git -C "$common" checkout --detach FETCH_HEAD
+          mkdir -p "$common"
 
-          resolved="$(git -C "$common" rev-parse HEAD)"
-          test "$resolved" = "$KERNEL_BASELINE_COMMIT"
+          archive_url="${KERNEL_REPO%/}/+archive/${KERNEL_BASELINE_COMMIT}.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSL "$archive_url"             | tar -xzf - -C "$common"
 
           actual_version="$(
             awk -F= '
@@ -102,6 +99,12 @@ jobs:
             ' "$common/Makefile"
           )"
           test "$actual_version" = "$KERNEL_BASELINE_VERSION"
+
+          # patchctl needs Git apply semantics, not full repository history.
+          # A temporary empty repository is enough for direct apply/reverse checks.
+          git -C "$common" init -q
+          git -C "$common" config user.name "SUSFS CI"
+          git -C "$common" config user.email "ci@example.invalid"
 
           ksu="$RUNNER_TEMP/integration/KernelSU"
           git init "$ksu"
@@ -114,7 +117,7 @@ jobs:
             echo "### Immutable build inputs"
             echo "- Lane: $KERNEL_LANE"
             echo "- Android release ref: $KERNEL_BASELINE_REF"
-            echo "- Android SHA: $resolved"
+            echo "- Android archive SHA: $KERNEL_BASELINE_COMMIT"
             echo "- Kernel version: $actual_version"
             echo "- KernelSU SHA: $KSU_BASELINE"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -124,6 +127,8 @@ jobs:
         run: |
           set -euo pipefail
           ./tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+
+          rm -rf "$RUNNER_TEMP/integration/common/.git"
 
       - name: Integrate KernelSU into kernel tree
         shell: bash
