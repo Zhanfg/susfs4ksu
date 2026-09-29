@@ -20,8 +20,6 @@ permissions:
   contents: read
 
 env:
-  AOSP_BASELINE_REF: android16-6.12-2026-06_r29
-  KSU_BASELINE: 623eba3e092b911a3a7389b7d87622a5835d2f3a
   CCACHE_DIR: /home/runner/.cache/ccache/susfs-6.12
   CCACHE_MAXSIZE: 1200M
 
@@ -32,6 +30,21 @@ jobs:
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v4
+
+      - name: Load patchset manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          data = json.loads(Path("kernel_patches/patchset.json").read_text())
+          print(f"KERNEL_REPO={data['kernel']['repository']}")
+          print(f"KERNEL_BASELINE={data['kernel']['baseline_ref']}")
+          print(f"KERNEL_LANE={data['lane']}")
+          print(f"KSU_REPO={data['kernelsu']['repository']}")
+          print(f"KSU_BASELINE={data['kernelsu']['baseline_commit']}")
+          PY
 
       - name: Install kernel build dependencies
         shell: bash
@@ -54,10 +67,10 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/integration"
 
-          git clone             --depth=1             --filter=blob:none             --branch "$AOSP_BASELINE_REF"             https://android.googlesource.com/kernel/common             "$RUNNER_TEMP/integration/common"
+          git clone             --depth=1             --filter=blob:none             --branch "$KERNEL_BASELINE"             "$KERNEL_REPO"             "$RUNNER_TEMP/integration/common"
 
           git init "$RUNNER_TEMP/integration/KernelSU"
-          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin https://github.com/tiann/KernelSU.git
+          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin "$KSU_REPO"
           git -C "$RUNNER_TEMP/integration/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
           git -C "$RUNNER_TEMP/integration/KernelSU" checkout --detach FETCH_HEAD
 
@@ -124,7 +137,8 @@ jobs:
 
           {
             echo "### Full kernel build"
-            echo "- Android common: $AOSP_BASELINE_REF"
+            echo "- Kernel lane: $KERNEL_LANE"
+            echo "- Android common: $KERNEL_BASELINE"
             echo "- KernelSU: $KSU_BASELINE"
             echo "- Image bytes: $(stat -c %s "$out/arch/arm64/boot/Image")"
             echo "- SHA256: $(sha256sum "$out/arch/arm64/boot/Image" | awk '{print $1}')"
