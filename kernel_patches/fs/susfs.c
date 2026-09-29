@@ -1583,8 +1583,14 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 	return 0;
 }
 
+static void susfs_free_fsnotify_mark(struct fsnotify_mark *mark)
+{
+	kfree(mark);
+}
+
 static const struct fsnotify_ops fsnotify_ops = {
 	.handle_inode_event = susfs_handle_sdcard_inode_event,
+	.free_mark = susfs_free_fsnotify_mark,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
