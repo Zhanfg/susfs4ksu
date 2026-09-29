@@ -22,6 +22,9 @@ permissions:
 env:
   CCACHE_DIR: /home/runner/.cache/ccache/susfs-6.12
   CCACHE_MAXSIZE: 1200M
+  PAHOLE_REPO: https://github.com/acmel/dwarves.git
+  PAHOLE_COMMIT: fa725d687ce3a712ef296b46bc63ea57ef466014
+  PAHOLE_PREFIX: /home/runner/.cache/pahole/v1.32
   PAHOLE_VERSION: v1.30
   PAHOLE_PREFIX: /home/runner/.cache/susfs-tools/pahole-v1.30
 
@@ -96,6 +99,43 @@ jobs:
 
           echo "$PAHOLE_PREFIX/bin" >> "$GITHUB_PATH"
           "$PAHOLE_PREFIX/bin/pahole" --version
+
+      - name: Restore pinned pahole cache
+        id: pahole-cache
+        uses: actions/cache@v6
+        with:
+          path: /home/runner/.cache/pahole/v1.32
+          key: pahole-${{ runner.os }}-v1.32-fa725d687ce3a712ef296b46bc63ea57ef466014
+
+      - name: Build pinned pahole v1.32
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$PAHOLE_PREFIX/bin/pahole"
+
+          if [ ! -x "$bin" ]; then
+            src="$RUNNER_TEMP/dwarves"
+            build="$RUNNER_TEMP/dwarves-build"
+            rm -rf "$src" "$build"
+
+            git init -q "$src"
+            git -C "$src" remote add origin "$PAHOLE_REPO"
+            git -C "$src" fetch --depth=1 origin "$PAHOLE_COMMIT"
+            git -C "$src" checkout --detach FETCH_HEAD
+            test "$(git -C "$src" rev-parse HEAD)" = "$PAHOLE_COMMIT"
+            git -C "$src" submodule update --init --recursive --depth=1
+
+            cmake -S "$src" -B "$build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DCMAKE_INSTALL_PREFIX="$PAHOLE_PREFIX"
+            cmake --build "$build" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+            cmake --install "$build"
+          fi
+
+          echo "$PAHOLE_PREFIX/bin" >> "$GITHUB_PATH"
+          "$bin" --version
+          "$bin" --help 2>&1 | grep -q -- '--btf_encode'
 
       - name: Restore compiler cache
         uses: actions/cache@v6
@@ -233,6 +273,10 @@ jobs:
           set -euo pipefail
           kernel="$RUNNER_TEMP/integration/common"
           out="$RUNNER_TEMP/out"
+
+          command -v pahole
+          pahole --version
+          test "$(command -v pahole)" = "$PAHOLE_PREFIX/bin/pahole"
 
           mkdir -p "$CCACHE_DIR"
           export CCACHE_BASEDIR="$kernel"
