@@ -104,14 +104,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh check             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+          bash tools/susfs-patchctl.sh check             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
 
       - name: Apply and verify idempotency
         shell: bash
         run: |
           set -euo pipefail
-          tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
-          tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+          bash tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+          bash tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
 
   oss-drift:
     runs-on: ubuntu-latest
