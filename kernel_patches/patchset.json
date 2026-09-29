@@ -4,9 +4,10 @@
   "lane": "gki-android16-6.12",
   "kernel": {
     "repository": "https://android.googlesource.com/kernel/common",
-    "baseline_ref": "android16-6.12-2026-06_r29",
+    "baseline_ref": "android16-6.12-2025-12_r1",
     "tracking_ref": "android16-6.12",
-    "major_minor": "6.12"
+    "major_minor": "6.12",
+    "baseline_reason": "Upstream SUSFS commit 2242ee2409d9c75fadf98d55dc957aef03d489d9 states the Android 16/6.12 patch was rebased and built against kernel 6.12.58."
   },
   "kernelsu": {
     "repository": "https://github.com/tiann/KernelSU.git",
