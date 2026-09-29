@@ -45,6 +45,7 @@ DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
 void susfs_add_sus_path(void __user **user_info) {
@@ -123,6 +124,8 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
+	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
+		static_branch_enable(&susfs_has_sus_path_loop);
 	mutex_unlock(&susfs_mutex_lock_sus_path);
 	SUSFS_LOGI("target_pathname: '%s', is successfully added to LH_SUS_PATH_LOOP\n", new_list->target_pathname);
 	info.err = 0;
@@ -135,6 +138,9 @@ out_copy_to_user:
 
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
+		return;
 	struct path path;
 	struct inode *inode;
 	struct fuse_inode *fi = NULL;
