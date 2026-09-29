@@ -387,3 +387,134 @@ jobs:
             print("OnePlus OSS has moved; re-audit required.", file=sys.stderr)
             sys.exit(1)
           PY
+
+
+  touched-objects:
+    needs: patch-direct
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Load OnePlus manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          d=json.loads(Path("kernel_patches/patchset.json").read_text())
+          print(f"KERNEL_REPO={d['kernel']['repository']}")
+          print(f"KERNEL_COMMIT={d['kernel']['baseline_commit']}")
+          print(f"KERNEL_VERSION={d['kernel']['baseline_version']}")
+          print(f"KERNEL_PATCH={d['patches']['kernel']}")
+          print(f"KSU_REPO={d['kernelsu']['repository']}")
+          print(f"KSU_COMMIT={d['kernelsu']['baseline_commit']}")
+          print(f"KSU_PATCH={d['patches']['kernelsu']}")
+          PY
+
+      - name: Install LLVM build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(bc bison flex libssl-dev libelf-dev clang lld llvm)
+          missing=()
+          for package in "${packages[@]}"; do
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed'; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+
+      - name: Download exact OnePlus common snapshot and KernelSU
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/oneplus-object"
+          common="$root/common"
+          ksu="$root/KernelSU"
+          archive="$RUNNER_TEMP/oneplus-common-${KERNEL_COMMIT}.tar.gz"
+          mkdir -p "$common" "$ksu"
+
+          curl --retry 3 --retry-all-errors -fL             "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/${KERNEL_COMMIT}.tar.gz"             -o "$archive"
+          tar -xzf "$archive" --strip-components=1 -C "$common"
+
+          actual="$(
+            awk -F= '
+              /^VERSION[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); v=$2}
+              /^PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); p=$2}
+              /^SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); s=$2}
+              END {print v "." p "." s}
+            ' "$common/Makefile"
+          )"
+          test "$actual" = "$KERNEL_VERSION"
+
+          git -C "$common" init -q
+          git -C "$common" config user.name "SUSFS CI"
+          git -C "$common" config user.email "ci@example.invalid"
+
+          git -C "$ksu" init -q
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_COMMIT"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_COMMIT"
+
+      - name: Apply OnePlus SUSFS integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-object/common"             --ksu-tree "$RUNNER_TEMP/oneplus-object/KernelSU"
+
+      - name: Integrate KernelSU and configure OnePlus GKI
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/oneplus-object/common"
+          out="$RUNNER_TEMP/oneplus-object-out"
+
+          ln -sfn ../../KernelSU/kernel "$kernel/drivers/kernelsu"
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel/drivers/Makefile"             || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$kernel/drivers/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"             || sed -i '/^endmenu/i\source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"
+
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
+          "$kernel/scripts/config" --file "$out/.config"             -e KSU             -e KSU_SUSFS             -e KSU_SUSFS_SUS_PATH             -e KSU_SUSFS_SUS_MOUNT             -e KSU_SUSFS_SUS_KSTAT             -e KSU_SUSFS_OPEN_REDIRECT             -e KSU_SUSFS_SUS_MAP
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
+
+          grep -q '^CONFIG_FUSE_BPF=y$' "$out/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y$' "$out/.config"
+
+      - name: Build every patch-touched C object
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/oneplus-object/common"
+          out="$RUNNER_TEMP/oneplus-object-out"
+          targets="$RUNNER_TEMP/oneplus-touched.txt"
+
+          python3 - <<'PY' > "$targets"
+          import os, re
+          from pathlib import Path
+
+          targets={"fs/susfs.o"}
+          for line in Path(os.environ["KERNEL_PATCH"]).read_text().splitlines():
+              m=re.match(r"diff --git a/(.+\.c) b/(.+\.c)$", line)
+              if m:
+                  targets.add(m.group(2)[:-2]+".o")
+          for line in Path(os.environ["KSU_PATCH"]).read_text().splitlines():
+              m=re.match(r"diff --git a/kernel/(.+\.c) b/kernel/(.+\.c)$", line)
+              if m:
+                  targets.add("drivers/kernelsu/"+m.group(2)[:-2]+".o")
+
+          for target in sorted(targets):
+              print(target)
+          PY
+
+          echo "Compiling $(wc -l < "$targets") OnePlus-touched objects"
+          cat "$targets"
+          mapfile -t objects < "$targets"
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 -j"$jobs" "${objects[@]}"
