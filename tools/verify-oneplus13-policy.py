@@ -23,10 +23,30 @@ def forbid(text: str, needle: str, label: str) -> None:
         raise SystemExit(f"forbidden OnePlus policy regression: {label}: {needle}")
 
 
+def patched_view(diff: str) -> str:
+    """Return the effective post-patch text represented by a unified diff.
+
+    Removed lines must not participate in policy checks: scanning raw patch
+    text would treat a fixed line such as '- if (foo)' as if it still existed.
+    """
+    out: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith(("diff --git ", "index ", "--- ", "+++ ", "@@")):
+            continue
+        if line.startswith("-"):
+            continue
+        if line.startswith("+"):
+            out.append(line[1:])
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def main() -> int:
     core = CORE.read_text(encoding="utf-8")
     header = HEADER.read_text(encoding="utf-8")
     ksu = KSU_PATCH.read_text(encoding="utf-8")
+    ksu_effective = patched_view(ksu)
     kernel_patch = KERNEL_PATCH.read_text(encoding="utf-8")
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
 
@@ -59,7 +79,7 @@ def main() -> int:
     require(core, "#ifdef CONFIG_FUSE_BPF", "FUSE-BPF specialization")
     require(core, "fi->backing_inode->i_mapping", "FUSE backing mapping propagation")
     require(
-        ksu,
+        ksu_effective,
         "!susfs_is_sus_path_loop_active() || work_pending(&susfs_extra_works)",
         "empty dynamic-path workqueue suppression",
     )
@@ -69,8 +89,16 @@ def main() -> int:
         "set_bit(AS_FLAGS_SUS_KSTAT, &fi->backing_inode",
         "do not mark FUSE backing KSTAT without alias-table semantics",
     )
-    forbid(ksu, "if (security_dump_masked_av_fn)", "Clang always-true SELinux wrapper check")
-    forbid(ksu, "if (context_struct_compute_av_fn)", "Clang always-true SELinux wrapper check")
+    forbid(
+        ksu_effective,
+        "if (security_dump_masked_av_fn)",
+        "Clang always-true SELinux wrapper check",
+    )
+    forbid(
+        ksu_effective,
+        "if (context_struct_compute_av_fn)",
+        "Clang always-true SELinux wrapper check",
+    )
 
     for path, text in ((CORE, core), (HEADER, header)):
         if re.search(r"(?<![A-Za-z0-9_])4096(?![A-Za-z0-9_])|0x1000\b", text):
