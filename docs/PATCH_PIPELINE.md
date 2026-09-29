@@ -57,9 +57,11 @@ The controller:
 - performs post-apply verification
 - is safe to run repeatedly on the pinned direct-apply baseline
 
-For partial clones, CI uses `tools/hydrate_patch_bases.py` to materialize only
-old blobs referenced by patch `index old..new` lines. This makes 3-way checks
-possible without downloading full kernel history.
+For manual adaptation work on drifted trees, `tools/hydrate_patch_bases.py`
+can materialize only old blobs referenced by patch `index old..new` lines so
+`git apply --3way` can work without downloading full kernel history. Routine
+CI deliberately does not use this path: the stable lane is direct-only and the
+moving tracking lane is a lightweight direct-apply drift probe.
 
 Override switches are intentionally explicit:
 
@@ -92,15 +94,18 @@ modified. NDK objects remain under `ksu_susfs/.build` so CI can cache them.
 
 ## CI gates
 
-The maintained pipeline has four distinct responsibilities:
+The maintained pipeline has five distinct responsibilities:
 
 1. **Userspace/module CI** — incremental NDK build, deterministic module ZIP,
    and installable artifact upload.
 2. **Patch compatibility CI** — unified-diff validation, patchctl transaction
-   tests, pinned baseline application, idempotency, and a non-blocking moving
-   Android-common drift probe.
-3. **Control-module CI** — validates the module/controller surface separately.
-4. **Full kernel CI** — applies the complete pinned SUSFS + KernelSU patchset,
+   tests, direct-only pinned baseline application, idempotency, and a
+   non-blocking direct-apply probe against current Android common.
+3. **Touched-object compile CI** — applies the exact pinned integration and
+   compiles every C object touched by the kernel/KernelSU patchset. This catches
+   source-level regressions quickly before the slower full Image build.
+4. **Control-module CI** — validates the module/controller surface separately.
+5. **Full kernel CI** — applies the complete pinned SUSFS + KernelSU patchset,
    enables SUSFS features, compiles an arm64 GKI `Image`, uses `ccache`, and
    publishes the kernel image artifact.
 
