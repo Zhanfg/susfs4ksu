@@ -74,7 +74,7 @@ jobs:
           git init "$common"
           git -C "$common" remote add origin "$KERNEL_REPO"
           git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE"
-          baseline_head="$(git -C "$common" rev-parse FETCH_HEAD)"
+          baseline_head="$(git -C "$common" rev-parse "FETCH_HEAD^{commit}")"
           test "$baseline_head" = "$KERNEL_BASELINE_COMMIT"
           git -C "$common" checkout --detach "$baseline_head"
 
