@@ -9,6 +9,7 @@ on:
     paths:
       - "kernel_patches/**"
       - "tools/susfs-patchctl.sh"
+      - "tools/verify_unified_diff.py"
       - ".github/workflows/patch-ci.yml"
   workflow_dispatch:
 
@@ -36,6 +37,7 @@ jobs:
           set -euo pipefail
           bash -n tools/susfs-patchctl.sh
           tools/susfs-patchctl.sh --help >/dev/null
+          python3 tools/verify_unified_diff.py
 
           for patch in kernel_patches/*.patch kernel_patches/KernelSU/*.patch; do
             [ -f "$patch" ] || continue
