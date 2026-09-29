@@ -1,0 +1,107 @@
+name: SUSFS patch compatibility CI
+
+on:
+  push:
+    branches:
+      - "modernize/**"
+      - "next-dev"
+      - "next"
+    paths:
+      - "kernel_patches/**"
+      - "tools/susfs-patchctl.sh"
+      - ".github/workflows/patch-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: susfs-patch-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  AOSP_KERNEL_BRANCH: android16-6.12
+  KSU_BASELINE: 623eba3e092b911a3a7389b7d87622a5835d2f3a
+
+jobs:
+  patch-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v4
+
+      - name: Validate patch tooling and syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tools/susfs-patchctl.sh
+          tools/susfs-patchctl.sh --help >/dev/null
+
+          for patch in kernel_patches/*.patch kernel_patches/KernelSU/*.patch; do
+            [ -f "$patch" ] || continue
+            git apply --numstat "$patch" >/dev/null
+          done
+
+          grep -q '#define SUSFS_VERSION "v2.3.0"' kernel_patches/include/linux/susfs.h
+
+      - name: Sparse checkout Android common baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/integration"
+
+          git clone             --depth=1             --filter=blob:none             --no-checkout             --branch "$AOSP_KERNEL_BRANCH"             https://android.googlesource.com/kernel/common             "$RUNNER_TEMP/integration/common"
+
+          kernel_patch="$(find kernel_patches -maxdepth 1 -type f -name '50_add_susfs*.patch' -print -quit)"
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$kernel_patch"             > "$RUNNER_TEMP/kernel-sparse.txt"
+
+          {
+            echo "/Makefile"
+            echo "/fs/"
+            echo "/include/linux/"
+          } >> "$RUNNER_TEMP/kernel-sparse.txt"
+
+          git -C "$RUNNER_TEMP/integration/common" sparse-checkout init --no-cone
+          git -C "$RUNNER_TEMP/integration/common" sparse-checkout set --no-cone             $(cat "$RUNNER_TEMP/kernel-sparse.txt")
+          git -C "$RUNNER_TEMP/integration/common" checkout
+
+          echo "AOSP resolved: $(git -C "$RUNNER_TEMP/integration/common" rev-parse HEAD)"             | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout pinned KernelSU baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/integration/KernelSU"
+          git -C "$RUNNER_TEMP/integration/KernelSU" init
+          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin https://github.com/tiann/KernelSU.git
+          git -C "$RUNNER_TEMP/integration/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
+          git -C "$RUNNER_TEMP/integration/KernelSU" checkout --detach FETCH_HEAD
+
+          test "$(git -C "$RUNNER_TEMP/integration/KernelSU" rev-parse HEAD)" = "$KSU_BASELINE"
+          echo "KernelSU baseline: $KSU_BASELINE" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Preflight real patchset
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/susfs-patchctl.sh check             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+
+      - name: Apply real patchset
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/susfs-patchctl.sh apply             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+
+          status="$(
+            tools/susfs-patchctl.sh status               --kernel-tree "$RUNNER_TEMP/integration/common"               --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+          )"
+          printf '%s\n' "$status"
+          grep -q '^kernel_patch=applied$' <<<"$status"
+          grep -q '^kernelsu_patch=applied$' <<<"$status"
+          grep -q '^current .*fs/susfs.c$' <<<"$status"
+
+      - name: Verify idempotent re-apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/susfs-patchctl.sh apply             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
