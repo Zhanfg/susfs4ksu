@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          packages=(bc bison flex libssl-dev libelf-dev dwarves ccache)
+          packages=(bc bison flex libssl-dev libelf-dev dwarves ccache clang lld llvm)
           missing=()
 
           for package in "${packages[@]}"; do
