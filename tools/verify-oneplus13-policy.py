@@ -100,6 +100,16 @@ def main() -> int:
     require(core, "#ifdef CONFIG_FUSE_BPF", "FUSE-BPF specialization")
     require(core, "fi->backing_inode->i_mapping", "FUSE backing mapping propagation")
     require(
+        core,
+        "susfs_mark_fuse_sus_map",
+        "FUSE-BPF backing SUS_MAP propagation",
+    )
+    require(
+        core,
+        "AS_FLAGS_SUS_MAP, &fi->backing_inode->i_mapping->flags",
+        "FUSE-BPF backing mmap mark",
+    )
+    require(
         ksu_effective,
         "!susfs_is_sus_path_loop_active() || work_pending(&susfs_extra_works)",
         "empty dynamic-path workqueue suppression",
