@@ -7,7 +7,9 @@
     "baseline_ref": "android16-6.12-2025-12_r1",
     "tracking_ref": "android16-6.12",
     "major_minor": "6.12",
-    "baseline_reason": "Upstream SUSFS commit 2242ee2409d9c75fadf98d55dc957aef03d489d9 states the Android 16/6.12 patch was rebased and built against kernel 6.12.58."
+    "baseline_reason": "Upstream SUSFS commit 2242ee2409d9c75fadf98d55dc957aef03d489d9 states the Android 16/6.12 patch was rebased and built against kernel 6.12.58; Android's android16-6.12-2025-12_r1 resolves to this 6.12.58 release commit.",
+    "baseline_commit": "67fe3c9df146f5752b3cd5c69c8e0460221a8018",
+    "baseline_version": "6.12.58"
   },
   "kernelsu": {
     "repository": "https://github.com/tiann/KernelSU.git",
