@@ -45,10 +45,16 @@ DEFINE_STATIC_KEY_FALSE(susfs_is_log_enabled);
 
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
+DEFINE_STATIC_KEY_FALSE(susfs_sus_path_spawn_refresh_needed);
 
 bool susfs_is_sus_path_loop_active(void)
 {
 	return static_branch_unlikely(&susfs_has_sus_path_loop);
+}
+
+bool susfs_needs_sus_path_loop_refresh(void)
+{
+	return static_branch_unlikely(&susfs_sus_path_spawn_refresh_needed);
 }
 
 /* sus_path */
@@ -91,6 +97,151 @@ static inline void susfs_mark_fuse_sus_path(struct fuse_inode *fi)
 		set_bit(AS_FLAGS_SUS_PATH, &fi->backing_inode->i_mapping->flags);
 #endif
 }
+
+#ifdef CONFIG_FUSE_BPF
+/*
+ * OnePlus 13 uses FUSE-BPF backing inodes for app-visible storage. A stable
+ * backing inode can carry the SUS_PATH mark across transient surface inode
+ * recreation, so avoid resolving the same pathname on every zygote spawn.
+ *
+ * Invalidation callbacks only mark the rule dirty and queue existing SUSFS
+ * work. Mark destruction/replacement stays in workqueue context.
+ */
+struct susfs_path_watch_mark {
+	struct fsnotify_mark mark;
+	struct st_susfs_sus_path_list *entry;
+	struct inode *watched_inode;
+};
+
+static struct fsnotify_group *susfs_path_watch_group;
+static DEFINE_MUTEX(susfs_path_watch_group_lock);
+static atomic_t susfs_path_watch_epoch = ATOMIC_INIT(0);
+extern struct work_struct susfs_extra_works;
+
+static void susfs_free_path_watch_mark(struct fsnotify_mark *mark)
+{
+	struct susfs_path_watch_mark *watch =
+		container_of(mark, struct susfs_path_watch_mark, mark);
+
+	kfree(watch);
+}
+
+static int susfs_handle_path_watch_event(struct fsnotify_mark *mark, u32 mask,
+					struct inode *inode, struct inode *dir,
+					const struct qstr *file_name, u32 cookie)
+{
+	struct susfs_path_watch_mark *watch =
+		container_of(mark, struct susfs_path_watch_mark, mark);
+	struct st_susfs_sus_path_list *entry = READ_ONCE(watch->entry);
+
+	if (!(mask & (FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT)) || !entry)
+		return 0;
+
+	/* Ignore an event from a mark that has already been superseded. */
+	if (READ_ONCE(entry->watch) != watch)
+		return 0;
+
+	WRITE_ONCE(entry->watch_valid, false);
+	atomic_inc(&susfs_path_watch_epoch);
+	schedule_work(&susfs_extra_works);
+	return 0;
+}
+
+static const struct fsnotify_ops susfs_path_watch_ops = {
+	.handle_inode_event = susfs_handle_path_watch_event,
+	.free_mark = susfs_free_path_watch_mark,
+};
+
+static int susfs_ensure_path_watch_group(void)
+{
+	struct fsnotify_group *group;
+	int ret = 0;
+
+	if (READ_ONCE(susfs_path_watch_group))
+		return 0;
+
+	mutex_lock(&susfs_path_watch_group_lock);
+	if (susfs_path_watch_group)
+		goto out_unlock;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+	group = fsnotify_alloc_group(&susfs_path_watch_ops, 0);
+#else
+	group = fsnotify_alloc_group(&susfs_path_watch_ops);
+#endif
+	if (IS_ERR(group)) {
+		ret = PTR_ERR(group);
+		goto out_unlock;
+	}
+	WRITE_ONCE(susfs_path_watch_group, group);
+
+out_unlock:
+	mutex_unlock(&susfs_path_watch_group_lock);
+	return ret;
+}
+
+static void susfs_destroy_path_watch(struct st_susfs_sus_path_list *entry)
+{
+	struct susfs_path_watch_mark *watch =
+		xchg(&entry->watch, NULL);
+	struct fsnotify_group *group = READ_ONCE(susfs_path_watch_group);
+
+	WRITE_ONCE(entry->watch_valid, false);
+	if (!watch || !group)
+		return;
+
+	WRITE_ONCE(watch->entry, NULL);
+	fsnotify_destroy_mark(&watch->mark, group);
+	fsnotify_put_mark(&watch->mark);
+}
+
+static int susfs_watch_backing_inode(struct st_susfs_sus_path_list *entry,
+				     struct inode *backing_inode)
+{
+	struct susfs_path_watch_mark *watch;
+	int ret;
+
+	if (!backing_inode)
+		return -EINVAL;
+
+	watch = READ_ONCE(entry->watch);
+	if (watch && READ_ONCE(entry->watch_valid) &&
+	    watch->watched_inode == backing_inode)
+		return 0;
+
+	ret = susfs_ensure_path_watch_group();
+	if (ret)
+		return ret;
+
+	susfs_destroy_path_watch(entry);
+
+	watch = kzalloc(sizeof(*watch), GFP_KERNEL);
+	if (!watch)
+		return -ENOMEM;
+
+	watch->entry = entry;
+	watch->watched_inode = backing_inode;
+	fsnotify_init_mark(&watch->mark, susfs_path_watch_group);
+	watch->mark.mask = FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT;
+
+	/*
+	 * Publish before attachment so an event racing immediately after
+	 * fsnotify_add_inode_mark() can identify the current watcher.
+	 */
+	WRITE_ONCE(entry->watch, watch);
+	ret = fsnotify_add_inode_mark(&watch->mark, backing_inode, 0);
+	if (ret) {
+		if (cmpxchg(&entry->watch, watch, NULL) == watch)
+			WRITE_ONCE(entry->watch_valid, false);
+		WRITE_ONCE(watch->entry, NULL);
+		fsnotify_put_mark(&watch->mark);
+		return ret;
+	}
+
+	WRITE_ONCE(entry->watch_valid, true);
+	return 0;
+}
+#endif /* CONFIG_FUSE_BPF */
 
 void susfs_add_sus_path(void __user **user_info) {
 	struct st_susfs_sus_path info = {0};
@@ -171,6 +322,8 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 	}
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
+	WRITE_ONCE(new_list->watch_valid, false);
+	WRITE_ONCE(new_list->fallback_required, true);
 	mutex_lock(&susfs_mutex_lock_sus_path);
 	list_for_each_entry(cursor, &LH_SUS_PATH_LOOP, list) {
 		if (!strcmp(cursor->target_pathname, new_list->target_pathname)) {
@@ -187,6 +340,8 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		static_branch_enable(&susfs_has_sus_path_rules);
 	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
 		static_branch_enable(&susfs_has_sus_path_loop);
+	if (!static_branch_unlikely(&susfs_sus_path_spawn_refresh_needed))
+		static_branch_enable(&susfs_sus_path_spawn_refresh_needed);
 	mutex_unlock(&susfs_mutex_lock_sus_path);
 	SUSFS_LOGI("target_pathname: '%s', is successfully added to LH_SUS_PATH_LOOP\n", new_list->target_pathname);
 	info.err = 0;
@@ -197,46 +352,111 @@ out_copy_to_user:
 	SUSFS_LOGI("CMD_SUSFS_ADD_SUS_PATH_LOOP -> ret: %d\n", info.err);
 }
 
-static void susfs_run_sus_path_loop(void) {
-	struct st_susfs_sus_path_list *cursor = NULL;
+static bool susfs_refresh_sus_path_entry(struct st_susfs_sus_path_list *entry)
+{
 	struct path path;
+	struct inode *inode;
+	struct fuse_inode *fi = NULL;
+	bool fallback_required = true;
+
+	if (kern_path(entry->target_pathname, 0, &path)) {
+#ifdef CONFIG_FUSE_BPF
+		susfs_destroy_path_watch(entry);
+#endif
+		WRITE_ONCE(entry->fallback_required, true);
+		return true;
+	}
+
+	inode = d_backing_inode(path.dentry);
+	if (!inode || !inode->i_mapping)
+		goto out_fallback;
+
+	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
+		fi = get_fuse_inode(inode);
+		if (!fi || !fi->inode.i_mapping)
+			goto out_fallback;
+
+		susfs_mark_fuse_sus_path(fi);
+#ifdef CONFIG_FUSE_BPF
+		if (fi->backing_inode && fi->backing_inode->i_mapping &&
+		    !susfs_watch_backing_inode(entry, fi->backing_inode)) {
+			fallback_required = false;
+			goto out_done;
+		}
+#endif
+		goto out_fallback;
+	}
+
+	if (!susfs_mapping_is_sus_path(inode->i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+
+out_fallback:
+#ifdef CONFIG_FUSE_BPF
+	susfs_destroy_path_watch(entry);
+#endif
+out_done:
+	WRITE_ONCE(entry->fallback_required, fallback_required);
+	path_put(&path);
+	return fallback_required;
+}
+
+static void susfs_update_spawn_refresh_key(bool required)
+{
+	if (required) {
+		if (!static_key_enabled(&susfs_sus_path_spawn_refresh_needed))
+			static_branch_enable(&susfs_sus_path_spawn_refresh_needed);
+	} else if (static_key_enabled(&susfs_sus_path_spawn_refresh_needed)) {
+		static_branch_disable(&susfs_sus_path_spawn_refresh_needed);
+	}
+}
+
+static void susfs_run_sus_path_loop(void)
+{
+	struct st_susfs_sus_path_list *cursor;
+	const struct cred *saved;
+	bool fallback_required;
+	int srcu_idx;
+	int epoch_before;
+	int pass;
 
 	if (!susfs_is_sus_path_loop_active())
 		return;
-	struct inode *inode;
-	struct fuse_inode *fi = NULL;
-	const struct cred *saved = override_creds(ksu_cred);
-	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
 
-	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
-		if (!kern_path(cursor->target_pathname, 0, &path))
-		{
-			inode = d_backing_inode(path.dentry);
-			if (!inode || !inode->i_mapping) {
-				SUSFS_LOGE("inode || inode->i_mapping is NULL\n");
-				path_put(&path);
+	saved = override_creds(ksu_cred);
+
+	/*
+	 * One retry closes the event-vs-worker race cheaply. If invalidations
+	 * keep arriving, preserve correctness by leaving spawn fallback enabled.
+	 */
+	for (pass = 0; pass < 2; pass++) {
+		epoch_before = atomic_read(&susfs_path_watch_epoch);
+		fallback_required = false;
+		srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
+
+		list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
+#ifdef CONFIG_FUSE_BPF
+			if (READ_ONCE(cursor->watch_valid) &&
+			    !READ_ONCE(cursor->fallback_required))
 				continue;
-			}
-			if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
-				fi = get_fuse_inode(inode);
-				if (!fi || !fi->inode.i_mapping) {
-					SUSFS_LOGE("fi || fi->inode.i_mapping is NULL\n");
-					path_put(&path);
-					continue;
-				}
-				susfs_mark_fuse_sus_path(fi);
-				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', fi->inode.i_ino: '%lu', fi->inode.i_mapping->flags: 0x%lx\n",
-						cursor->target_pathname, fi->inode.i_ino, fi->inode.i_mapping->flags);
-			} else {
-				if (!susfs_mapping_is_sus_path(inode->i_mapping))
-					set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
-				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', inode->i_ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
-						cursor->target_pathname, inode->i_ino, inode->i_mapping->flags);
-			}
-			path_put(&path);
+#endif
+			if (susfs_refresh_sus_path_entry(cursor))
+				fallback_required = true;
 		}
+
+		srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
+		if (epoch_before == atomic_read(&susfs_path_watch_epoch))
+			break;
 	}
-	srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
+
+	if (epoch_before != atomic_read(&susfs_path_watch_epoch))
+		fallback_required = true;
+
+	/*
+	 * A rule not safely covered by an inode watcher keeps the original
+	 * per-spawn refresh behavior. Fully watched OnePlus FUSE-BPF rules turn
+	 * it off and rely on invalidation events instead.
+	 */
+	susfs_update_spawn_refresh_key(fallback_required);
 	revert_creds(saved);
 }
 
