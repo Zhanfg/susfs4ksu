@@ -182,6 +182,18 @@ struct st_susfs_version {
 	int                                     err;
 };
 
+/* Versioned, allocation-free capability query ABI. */
+struct st_susfs_capabilities {
+	__u32                                   abi_version;
+	__u32                                   struct_size;
+	__u64                                   compiled_features;
+	__u64                                   runtime_features;
+	char                                    susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
+	char                                    susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
+	__s32                                   err;
+	__u32                                   reserved;
+};
+
 /***********************/
 /* FORWARD DECLARATION */
 /***********************/
@@ -233,6 +245,7 @@ void susfs_set_avc_log_spoofing(void __user **user_info);
 void susfs_get_enabled_features(void __user **user_info);
 void susfs_show_variant(void __user **user_info);
 void susfs_show_version(void __user **user_info);
+void susfs_query_capabilities(void __user **user_info);
 
 void susfs_start_sdcard_monitor_fn(void);
 

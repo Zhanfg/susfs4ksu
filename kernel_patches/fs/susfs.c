@@ -1217,6 +1217,67 @@ out_copy_to_user:
 	SUSFS_LOGI("CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING -> ret: %d\n", info.err);
 }
 
+/* query versioned SUSFS capabilities without dynamic allocation */
+void susfs_query_capabilities(void __user **user_info) {
+	struct st_susfs_capabilities info = {0};
+
+	if (copy_from_user(&info, (struct st_susfs_capabilities __user*)*user_info, sizeof(info))) {
+		info.err = -EFAULT;
+		goto out_copy_to_user;
+	}
+
+	if (info.abi_version != SUSFS_CAPS_ABI_VERSION ||
+	    info.struct_size < sizeof(info)) {
+		info.err = -EPROTO;
+		goto out_copy_to_user;
+	}
+
+	info.compiled_features = SUSFS_CAP_AVC_LOG_SPOOFING;
+
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+	info.compiled_features |= SUSFS_CAP_SUS_PATH;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	info.compiled_features |= SUSFS_CAP_SUS_MOUNT;
+	if (static_key_enabled(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled))
+		info.runtime_features |= SUSFS_CAP_SUS_MOUNT;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	info.compiled_features |= SUSFS_CAP_SUS_KSTAT;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+	info.compiled_features |= SUSFS_CAP_SPOOF_UNAME;
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+	info.compiled_features |= SUSFS_CAP_ENABLE_LOG;
+	if (static_key_enabled(&susfs_is_log_enabled))
+		info.runtime_features |= SUSFS_CAP_ENABLE_LOG;
+#endif
+#ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	info.compiled_features |= SUSFS_CAP_HIDE_SYMBOLS;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	info.compiled_features |= SUSFS_CAP_SPOOF_CMDLINE_OR_BOOTCONFIG;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	info.compiled_features |= SUSFS_CAP_OPEN_REDIRECT;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+	info.compiled_features |= SUSFS_CAP_SUS_MAP;
+#endif
+	if (static_key_enabled(&susfs_is_avc_log_spoofing_enabled))
+		info.runtime_features |= SUSFS_CAP_AVC_LOG_SPOOFING;
+
+	strscpy(info.susfs_version, SUSFS_VERSION, SUSFS_MAX_VERSION_BUFSIZE - 1);
+	strscpy(info.susfs_variant, SUSFS_VARIANT, SUSFS_MAX_VARIANT_BUFSIZE - 1);
+	info.err = 0;
+
+out_copy_to_user:
+	if (copy_to_user((struct st_susfs_capabilities __user*)*user_info, &info, sizeof(info)))
+		info.err = -EFAULT;
+	SUSFS_LOGI("CMD_SUSFS_QUERY_CAPABILITIES -> ret: %d\n", info.err);
+}
+
 /* get susfs enabled features */
 static int copy_config_to_buf(const char *config_string, char *buf_ptr, size_t *copied_size, size_t bufsize) {
 	size_t tmp_size = strlen(config_string);

@@ -2966,6 +2966,9 @@ index de184e10..dbf87206 100644
 +            case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
 +                susfs_set_avc_log_spoofing(arg);
 +                return 0;
++            case CMD_SUSFS_QUERY_CAPABILITIES:
++                susfs_query_capabilities(arg);
++                return 0;
 +            case CMD_SUSFS_SHOW_ENABLED_FEATURES:
 +                susfs_get_enabled_features(arg);
 +                return 0;
