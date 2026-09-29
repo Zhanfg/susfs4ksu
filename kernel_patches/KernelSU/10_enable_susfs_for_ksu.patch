@@ -1124,6 +1124,29 @@ index fbb6c44f..1b34903f 100644
                                                           struct av_decision *avd)
  {
      struct policydb *policydb;
+@@ -814,7 +473,6 @@ static void security_boundary_permission(struct policydb *policydb,
+     avd->allowed &= ~masked;
+ 
+     /* audit masked permissions */
+-    if (security_dump_masked_av_fn)
+-        security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
++    security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
+ }
+ 
+@@ -1129,13 +787,9 @@ static void security_compute_av_user_with_policy(struct selinux_policy *policy,
+         goto out;
+     }
+ 
+-    if (context_struct_compute_av_fn) {
+-        context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+-    } else {
+-        context_struct_compute_av(policydb, scontext, tcontext, tclass, avd, NULL);
+-    }
++    context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+ out:
+     return;
+ allow:
+
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 index f5cd7bf2..e784aba5 100644
 --- a/kernel/feature/sucompat.c
