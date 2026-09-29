@@ -1,4 +1,4 @@
-name: SUSFS userspace CI
+name: SUSFS build CI
 
 on:
   push:
@@ -8,35 +8,100 @@ on:
       - "next"
     paths:
       - "ksu_susfs/**"
+      - "ksu_module_susfs/**"
       - "build_ksu_susfs_tool.sh"
+      - "build_ksu_module.sh"
+      - "build_all.sh"
       - ".github/workflows/userspace-ci.yml"
   workflow_dispatch:
+
+concurrency:
+  group: susfs-build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  NDK_RELEASE: android-ndk-r27c
+  NDK_VERSION: 27.2.12479018
+
 jobs:
-  build-userspace:
+  build-userspace-and-module:
     runs-on: ubuntu-latest
-    env:
-      NDK_RELEASE: android-ndk-r27c
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pinned Android NDK
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/susfs-ndk"
-          curl -fsSL             "https://dl.google.com/android/repository/${NDK_RELEASE}-linux.zip"             -o "${RUNNER_TEMP}/susfs-ndk/ndk.zip"
-          unzip -q "${RUNNER_TEMP}/susfs-ndk/ndk.zip"             -d "${RUNNER_TEMP}/susfs-ndk"
-          echo "${RUNNER_TEMP}/susfs-ndk/${NDK_RELEASE}" >> "${GITHUB_PATH}"
+      - name: Cache NDK archive
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/susfs/android-ndk-r27c-linux.zip
+          key: susfs-ndk-${{ runner.os }}-android-ndk-r27c
 
-      - name: Build ksu_susfs
+      - name: Resolve pinned Android NDK
         shell: bash
         run: |
           set -euo pipefail
-          ./build_ksu_susfs_tool.sh
+
+          preinstalled="${ANDROID_SDK_ROOT:-}/ndk/${NDK_VERSION}"
+          if [ -n "${ANDROID_SDK_ROOT:-}" ] && [ -x "$preinstalled/ndk-build" ]; then
+            echo "ANDROID_NDK_HOME=$preinstalled" >> "$GITHUB_ENV"
+            echo "$preinstalled" >> "$GITHUB_PATH"
+            echo "Using runner NDK: $preinstalled"
+            exit 0
+          fi
+
+          cache_dir="$HOME/.cache/susfs"
+          archive="$cache_dir/${NDK_RELEASE}-linux.zip"
+          mkdir -p "$cache_dir" "$RUNNER_TEMP/susfs-ndk"
+
+          if [ ! -s "$archive" ]; then
+            curl --retry 3 --retry-all-errors -fsSL               "https://dl.google.com/android/repository/${NDK_RELEASE}-linux.zip"               -o "$archive"
+          fi
+
+          unzip -q "$archive" -d "$RUNNER_TEMP/susfs-ndk"
+          ndk_dir="$RUNNER_TEMP/susfs-ndk/${NDK_RELEASE}"
+          test -x "$ndk_dir/ndk-build"
+          echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
+          echo "$ndk_dir" >> "$GITHUB_PATH"
+
+      - name: Restore incremental NDK objects
+        uses: actions/cache@v4
+        with:
+          path: ksu_susfs/.build
+          key: susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-${{ hashFiles('ksu_susfs/jni/**') }}
+          restore-keys: |
+            susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-
+
+      - name: Build userspace and module
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build_all.sh
           test -x ksu_module_susfs/tools/ksu_susfs_arm64
+          test -s ksu_module_susfs.zip
           file ksu_module_susfs/tools/ksu_susfs_arm64
+          sha256sum ksu_module_susfs/tools/ksu_susfs_arm64 ksu_module_susfs.zip
+
+      - name: Verify reproducible module archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          first_sha="$(sha256sum ksu_module_susfs.zip | awk '{print $1}')"
+          ./build_ksu_module.sh --output "$RUNNER_TEMP/ksu_module_susfs-second.zip"
+          second_sha="$(sha256sum "$RUNNER_TEMP/ksu_module_susfs-second.zip" | awk '{print $1}')"
+          echo "first=$first_sha"
+          echo "second=$second_sha"
+          test "$first_sha" = "$second_sha"
+
+      - name: Upload installable artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs-next-arm64-${{ github.sha }}
+          path: |
+            ksu_module_susfs.zip
+            ksu_module_susfs/tools/ksu_susfs_arm64
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
