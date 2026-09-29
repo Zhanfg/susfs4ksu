@@ -186,6 +186,8 @@ jobs:
       PATCHSET_LANE: ${{ needs.syntax.outputs.lane }}
       KERNEL_REPO: ${{ needs.syntax.outputs.kernel_repo }}
       KERNEL_REF: ${{ needs.syntax.outputs.kernel_tracking }}
+      KERNEL_BASELINE_REF: ${{ needs.syntax.outputs.kernel_baseline_ref }}
+      KERNEL_BASELINE_COMMIT: ${{ needs.syntax.outputs.kernel_baseline_commit }}
       KERNEL_PATCH: ${{ needs.syntax.outputs.kernel_patch }}
       KSU_REPO: ${{ needs.syntax.outputs.ksu_repo }}
       KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
@@ -211,11 +213,20 @@ jobs:
           git -C "$common" remote add origin "$KERNEL_REPO"
           git -C "$common" sparse-checkout init --no-cone
           xargs -a "$RUNNER_TEMP/kernel-sparse.txt"             git -C "$common" sparse-checkout set --no-cone
-          git -C "$common" fetch             --shallow-since='2026-01-01T00:00:00Z'             --filter=blob:none             origin "$KERNEL_REF"
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_REF"
           tracking_head="$(git -C "$common" rev-parse "FETCH_HEAD^{commit}")"
+          git -C "$common" update-ref refs/susfs/tracking "$tracking_head"
+
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE_REF"
+          baseline_head="$(git -C "$common" rev-parse "FETCH_HEAD^{commit}")"
+          test "$baseline_head" = "$KERNEL_BASELINE_COMMIT"
+          git -C "$common" update-ref refs/susfs/stable-base "$baseline_head"
+
           git -C "$common" checkout --detach "$tracking_head"
 
-          python3 tools/hydrate_patch_bases.py             --repo "$common"             --patch "$KERNEL_PATCH"
+          python3 tools/hydrate_patch_bases.py \
+            --repo "$common" \
+            --patch "$KERNEL_PATCH"
 
           {
             echo "### Moving-kernel compatibility probe"
