@@ -7,8 +7,16 @@ on:
     paths:
       - "tools/oneplus13-workspace.sh"
       - "tools/oneplus13-integrate.sh"
-      - "tools/susfs-patchctl.sh"
+      - "kernel_patches/patchset.json"
+      - ".github/workflows/oneplus13-workspace-ci.yml"
+  pull_request:
+    branches:
+      - "next-6.6"
+    paths:
       - "kernel_patches/**"
+      - "tools/oneplus13-workspace.sh"
+      - "tools/oneplus13-integrate.sh"
+      - "tools/susfs-patchctl.sh"
       - ".github/workflows/oneplus13-workspace-ci.yml"
   workflow_dispatch:
 
