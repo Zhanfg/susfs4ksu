@@ -9,7 +9,6 @@ on:
     paths:
       - "kernel_patches/**"
       - "tools/susfs-patchctl.sh"
-      - "tools/hydrate_patch_bases.py"
       - ".github/workflows/kernel-ci.yml"
   workflow_dispatch:
 
@@ -39,11 +38,11 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_ENV"
           import json
           from pathlib import Path
-          data = json.loads(Path("kernel_patches/patchset.json").read_text())
+          data = json.loads(Path("kernel_patches/patchset.json").read_text(encoding="utf-8"))
           print(f"KERNEL_REPO={data['kernel']['repository']}")
-          print(f"KERNEL_BASELINE={data['kernel']['baseline_ref']}")
+          print(f"KERNEL_BASELINE_REF={data['kernel']['baseline_ref']}")
           print(f"KERNEL_BASELINE_COMMIT={data['kernel']['baseline_commit']}")
-          print(f"KERNEL_PATCH={data['patches']['kernel']}")
+          print(f"KERNEL_BASELINE_VERSION={data['kernel']['baseline_version']}")
           print(f"KERNEL_LANE={data['lane']}")
           print(f"KSU_REPO={data['kernelsu']['repository']}")
           print(f"KSU_BASELINE={data['kernelsu']['baseline_commit']}")
@@ -64,7 +63,7 @@ jobs:
           restore-keys: |
             susfs-kernel-ccache-${{ runner.os }}-6.12-
 
-      - name: Clone pinned kernel and KernelSU
+      - name: Checkout immutable kernel and KernelSU baselines
         shell: bash
         run: |
           set -euo pipefail
@@ -73,31 +72,49 @@ jobs:
           common="$RUNNER_TEMP/integration/common"
           git init "$common"
           git -C "$common" remote add origin "$KERNEL_REPO"
-          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE"
-          baseline_head="$(git -C "$common" rev-parse "FETCH_HEAD^{commit}")"
-          test "$baseline_head" = "$KERNEL_BASELINE_COMMIT"
-          git -C "$common" checkout --detach "$baseline_head"
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE_COMMIT"
+          git -C "$common" checkout --detach FETCH_HEAD
 
-          git init "$RUNNER_TEMP/integration/KernelSU"
-          git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin "$KSU_REPO"
-          git -C "$RUNNER_TEMP/integration/KernelSU" fetch --depth=1 origin "$KSU_BASELINE"
-          git -C "$RUNNER_TEMP/integration/KernelSU" checkout --detach FETCH_HEAD
+          resolved="$(git -C "$common" rev-parse HEAD)"
+          test "$resolved" = "$KERNEL_BASELINE_COMMIT"
 
-      - name: Apply SUSFS patchset
+          actual_version="$(
+            awk -F= '
+              /^VERSION[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); v=$2}
+              /^PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); p=$2}
+              /^SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); s=$2}
+              END {print v "." p "." s}
+            ' "$common/Makefile"
+          )"
+          test "$actual_version" = "$KERNEL_BASELINE_VERSION"
+
+          ksu="$RUNNER_TEMP/integration/KernelSU"
+          git init "$ksu"
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_BASELINE"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_BASELINE"
+
+          {
+            echo "### Immutable build inputs"
+            echo "- Lane: $KERNEL_LANE"
+            echo "- Android release ref: $KERNEL_BASELINE_REF"
+            echo "- Android SHA: $resolved"
+            echo "- Kernel version: $actual_version"
+            echo "- KernelSU SHA: $KSU_BASELINE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply SUSFS patchset directly
         shell: bash
         run: |
           set -euo pipefail
-          ./tools/susfs-patchctl.sh apply \
-            --require-direct \
-            --kernel-tree "$RUNNER_TEMP/integration/common" \
-            --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
+          ./tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/integration/common"             --ksu-tree "$RUNNER_TEMP/integration/KernelSU"
 
       - name: Integrate KernelSU into kernel tree
         shell: bash
         run: |
           set -euo pipefail
           kernel="$RUNNER_TEMP/integration/common"
-          ksu="$RUNNER_TEMP/integration/KernelSU"
 
           ln -sfn ../../KernelSU/kernel "$kernel/drivers/kernelsu"
           grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel/drivers/Makefile"             || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$kernel/drivers/Makefile"
@@ -116,33 +133,11 @@ jobs:
 
           make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
 
-          "$kernel/scripts/config" --file "$out/.config" \
-            -e KSU \
-            -e KSU_SUSFS \
-            -e KSU_SUSFS_SUS_PATH \
-            -e KSU_SUSFS_SUS_MOUNT \
-            -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_SPOOF_UNAME \
-            -e KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -e KSU_SUSFS_OPEN_REDIRECT \
-            -e KSU_SUSFS_SUS_MAP \
-            -e LTO_CLANG \
-            -e LTO_CLANG_THIN
+          "$kernel/scripts/config" --file "$out/.config"             -e KSU             -e KSU_SUSFS             -e KSU_SUSFS_SUS_PATH             -e KSU_SUSFS_SUS_MOUNT             -e KSU_SUSFS_SUS_KSTAT             -e KSU_SUSFS_SPOOF_UNAME             -e KSU_SUSFS_ENABLE_LOG             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG             -e KSU_SUSFS_OPEN_REDIRECT             -e KSU_SUSFS_SUS_MAP
 
           make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
 
-          for cfg in \
-            CONFIG_KSU=y \
-            CONFIG_KSU_SUSFS=y \
-            CONFIG_KSU_SUSFS_SUS_PATH=y \
-            CONFIG_KSU_SUSFS_SUS_MOUNT=y \
-            CONFIG_KSU_SUSFS_SUS_KSTAT=y \
-            CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
-            CONFIG_KSU_SUSFS_SUS_MAP=y \
-            CONFIG_LTO_CLANG=y \
-            CONFIG_LTO_CLANG_THIN=y; do
+          for cfg in             CONFIG_KSU=y             CONFIG_KSU_SUSFS=y             CONFIG_KSU_SUSFS_SUS_PATH=y             CONFIG_KSU_SUSFS_SUS_MOUNT=y             CONFIG_KSU_SUSFS_SUS_KSTAT=y             CONFIG_KSU_SUSFS_OPEN_REDIRECT=y             CONFIG_KSU_SUSFS_SUS_MAP=y; do
             grep -q "^$cfg$" "$out/.config"
           done
 
@@ -154,9 +149,6 @@ jobs:
           out="$RUNNER_TEMP/out"
 
           mkdir -p "$CCACHE_DIR"
-          export CCACHE_BASEDIR="$kernel"
-          export CCACHE_NOHASHDIR=true
-          export CCACHE_COMPILERCHECK=content
           ccache --max-size "$CCACHE_MAXSIZE"
           ccache --zero-stats
 
@@ -167,14 +159,7 @@ jobs:
           jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
           if [ "$jobs" -gt 4 ]; then jobs=4; fi
 
-          make -C "$kernel" \
-            O="$out" \
-            ARCH=arm64 \
-            LLVM=1 \
-            CC="ccache clang" \
-            HOSTCC="ccache clang" \
-            -j"$jobs" \
-            Image
+          make -C "$kernel"             O="$out"             ARCH=arm64             LLVM=1             CC="ccache clang"             HOSTCC="ccache clang"             -j"$jobs"             Image
 
           test -s "$out/arch/arm64/boot/Image"
           ccache --show-stats
@@ -182,7 +167,7 @@ jobs:
           {
             echo "### Full kernel build"
             echo "- Kernel lane: $KERNEL_LANE"
-            echo "- Android common: $KERNEL_BASELINE"
+            echo "- Android common: $KERNEL_BASELINE_COMMIT ($KERNEL_BASELINE_REF)"
             echo "- KernelSU: $KSU_BASELINE"
             echo "- Image bytes: $(stat -c %s "$out/arch/arm64/boot/Image")"
             echo "- SHA256: $(sha256sum "$out/arch/arm64/boot/Image" | awk '{print $1}')"
