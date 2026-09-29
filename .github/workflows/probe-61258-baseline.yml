@@ -1,0 +1,68 @@
+name: Probe SUSFS 6.12.58 baselines
+
+on:
+  push:
+    branches:
+      - "modernize/build-pipeline"
+    paths:
+      - ".github/workflows/probe-61258-baseline.yml"
+      - "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: susfs-probe-61258-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - android16-6.12.58_r00
+          - android16-6.12-2025-12_r1
+          - android16-6.12-2026-06_r29
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Sparse checkout candidate
+        shell: bash
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          set -euo pipefail
+          repo="$RUNNER_TEMP/common"
+          patch="$GITHUB_WORKSPACE/kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+          mkdir -p "$repo"
+
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$patch" \
+            > "$RUNNER_TEMP/kernel-sparse.txt"
+          echo "/Makefile" >> "$RUNNER_TEMP/kernel-sparse.txt"
+
+          git -C "$repo" init
+          git -C "$repo" remote add origin https://android.googlesource.com/kernel/common
+          git -C "$repo" sparse-checkout init --no-cone
+          xargs -a "$RUNNER_TEMP/kernel-sparse.txt" \
+            git -C "$repo" sparse-checkout set --no-cone
+          git -C "$repo" fetch --depth=1 --filter=blob:none origin "$REF"
+          git -C "$repo" checkout --detach FETCH_HEAD
+
+          {
+            echo "### Candidate $REF"
+            echo "- SHA: $(git -C "$repo" rev-parse HEAD)"
+            echo "- Version: $(awk -F= '/^VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);v=$2} /^PATCHLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);p=$2} /^SUBLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);s=$2} END{print v "." p "." s}' "$repo/Makefile")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify direct patch application
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch="$GITHUB_WORKSPACE/kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+          git -C "$RUNNER_TEMP/common" apply --check "$patch"
+          echo "- direct git apply: PASS" >> "$GITHUB_STEP_SUMMARY"
