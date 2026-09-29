@@ -40,12 +40,28 @@ DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 #define SUSFS_LOGE(fmt, ...) 
 #endif
 
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
+
+bool susfs_is_sus_path_loop_active(void)
+{
+	return static_branch_unlikely(&susfs_has_sus_path_loop);
+}
+
 /* sus_path */
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
+
+static inline void susfs_mark_fuse_sus_path(struct fuse_inode *fi)
+{
+	set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
+#ifdef CONFIG_FUSE_BPF
+	if (fi->backing_inode && fi->backing_inode->i_mapping)
+		set_bit(AS_FLAGS_SUS_PATH, &fi->backing_inode->i_mapping->flags);
+#endif
+}
 
 void susfs_add_sus_path(void __user **user_info) {
 	struct st_susfs_sus_path info = {0};
@@ -78,8 +94,7 @@ void susfs_add_sus_path(void __user **user_info) {
 			info.err = -ENOENT;
 			goto out_path_put_path;
 		}
-		set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
-		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+		susfs_mark_fuse_sus_path(fi);
 		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n", 
 					info.target_pathname, fi->nodeid, fi->inode.i_ino, fi->inode.i_mapping->flags);
 		info.err = 0;
@@ -119,11 +134,12 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
 	}
-	strscpy(new_list->info.target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
+	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
+		static_branch_enable(&susfs_has_sus_path_loop);
 	mutex_unlock(&susfs_mutex_lock_sus_path);
 	SUSFS_LOGI("target_pathname: '%s', is successfully added to LH_SUS_PATH_LOOP\n", new_list->target_pathname);
 	info.err = 0;
@@ -137,6 +153,9 @@ out_copy_to_user:
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
 	struct path path;
+
+	if (!susfs_is_sus_path_loop_active())
+		return;
 	struct inode *inode;
 	struct fuse_inode *fi = NULL;
 	const struct cred *saved = override_creds(ksu_cred);
@@ -272,7 +291,8 @@ out_copy_to_user:
 /* sus_kstat */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 static DEFINE_MUTEX(susfs_mutex_lock_sus_kstat);
-static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, 14);
+#define SUSFS_KSTAT_HASH_BITS 10
+static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, SUSFS_KSTAT_HASH_BITS);
 
 extern int calculate_f_flags_wrapper(struct vfsmount *mnt);
 extern int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf);
@@ -869,7 +889,8 @@ void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 /* open_redirect */
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
-static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
+#define SUSFS_OPEN_REDIRECT_HASH_BITS 10
+static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, SUSFS_OPEN_REDIRECT_HASH_BITS);
 DEFINE_SRCU(susfs_srcu_open_redirect);
 
 void susfs_add_open_redirect(void __user **user_info) {
