@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout SUSFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Load patchset manifest
         shell: bash
@@ -54,7 +54,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends             bc bison flex libssl-dev libelf-dev dwarves ccache
 
       - name: Restore compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache/susfs-6.12
           key: susfs-kernel-ccache-${{ runner.os }}-6.12-${{ github.sha }}
@@ -145,7 +145,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload kernel Image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: susfs-next-gki-android16-6.12-${{ github.sha }}
           path: ${{ runner.temp }}/out/arch/arm64/boot/Image

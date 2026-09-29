@@ -8,7 +8,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-
 DIFF_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 INDEX_RE = re.compile(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: \d+)?$")
 
@@ -54,7 +53,6 @@ def tree_blobs(repo: pathlib.Path, commit: str, paths: list[str]) -> dict[str, s
     out = run(repo, "ls-tree", "-r", "--full-tree", commit, "--", *paths)
     blobs: dict[str, str] = {}
     for line in out.splitlines():
-        # <mode> <type> <sha>\t<path>
         head, path = line.split("\t", 1)
         parts = head.split()
         if len(parts) >= 3 and parts[1] == "blob":
@@ -62,67 +60,86 @@ def tree_blobs(repo: pathlib.Path, commit: str, paths: list[str]) -> dict[str, s
     return blobs
 
 
+def candidate_commits(repo: pathlib.Path, paths: list[str], limit: int) -> list[str]:
+    head = run(repo, "rev-parse", "HEAD").strip()
+    changed = run(
+        repo,
+        "rev-list",
+        "--first-parent",
+        f"--max-count={limit}",
+        "HEAD",
+        "--",
+        *paths,
+    ).splitlines()
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for commit in [head, *changed]:
+        if commit and commit not in seen:
+            seen.add(commit)
+            result.append(commit)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Find a git commit whose file blobs match a unified diff's old index IDs."
+        description=(
+            "Find a source commit whose patch-touched blobs match a unified "
+            "diff's old index IDs."
+        )
     )
     parser.add_argument("--repo", required=True, type=pathlib.Path)
     parser.add_argument("--patch", required=True, type=pathlib.Path)
-    parser.add_argument("--max-commits", type=int, default=3000)
+    parser.add_argument("--max-candidates", type=int, default=5000)
     parser.add_argument("--top", type=int, default=10)
     args = parser.parse_args()
 
     expected = parse_patch(args.patch)
     paths = [item.path for item in expected]
-
-    commits = run(
-        args.repo,
-        "rev-list",
-        "--first-parent",
-        f"--max-count={args.max_commits}",
-        "HEAD",
-    ).splitlines()
+    commits = candidate_commits(args.repo, paths, args.max_candidates)
 
     if not commits:
-        print("no commits available", file=sys.stderr)
+        print("no candidate commits available", file=sys.stderr)
         return 2
 
+    rank = {commit: i for i, commit in enumerate(commits)}
     best: list[tuple[int, str, list[str]]] = []
 
     for idx, commit in enumerate(commits, start=1):
         blobs = tree_blobs(args.repo, commit, paths)
-        mismatches: list[str] = []
-
-        for item in expected:
-            actual = blobs.get(item.path, "")
-            if not actual.startswith(item.old_prefix):
-                mismatches.append(item.path)
-
+        mismatches = [
+            item.path
+            for item in expected
+            if not blobs.get(item.path, "").startswith(item.old_prefix)
+        ]
         score = len(expected) - len(mismatches)
+
         best.append((score, commit, mismatches))
-        best.sort(key=lambda item: (-item[0], commits.index(item[1])))
-        del best[args.top :]
+        best.sort(key=lambda item: (-item[0], rank[item[1]]))
+        del best[args.top:]
 
         if not mismatches:
             date = run(args.repo, "show", "-s", "--format=%cI", commit).strip()
             print(f"exact_commit={commit}")
             print(f"exact_date={date}")
             print(f"matched_files={len(expected)}")
+            print(f"candidates_scanned={idx}")
             return 0
 
-        if idx % 250 == 0:
+        if idx % 100 == 0:
             print(
-                f"scanned={idx} best={best[0][0]}/{len(expected)} {best[0][1]}",
+                f"scanned={idx}/{len(commits)} "
+                f"best={best[0][0]}/{len(expected)} {best[0][1]}",
                 file=sys.stderr,
             )
 
-    print(f"no exact match in {len(commits)} first-parent commits", file=sys.stderr)
+    print(f"no exact match in {len(commits)} path-change candidates", file=sys.stderr)
     print("best candidates:", file=sys.stderr)
     for score, commit, mismatches in best:
         date = run(args.repo, "show", "-s", "--format=%cI", commit).strip()
         print(
             f"  {score}/{len(expected)} {commit} {date} "
-            f"mismatch={','.join(mismatches[:6])}",
+            f"mismatch={','.join(mismatches[:8])}",
             file=sys.stderr,
         )
     return 2

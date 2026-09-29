@@ -31,10 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Cache NDK archive
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/susfs/android-ndk-r27c-linux.zip
           key: susfs-ndk-${{ runner.os }}-android-ndk-r27c
@@ -67,7 +67,7 @@ jobs:
           echo "$ndk_dir" >> "$GITHUB_PATH"
 
       - name: Restore incremental NDK objects
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ksu_susfs/.build
           key: susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-${{ hashFiles('ksu_susfs/jni/**') }}
@@ -96,7 +96,7 @@ jobs:
           test "$first_sha" = "$second_sha"
 
       - name: Upload installable artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: susfs-next-arm64-${{ github.sha }}
           path: |

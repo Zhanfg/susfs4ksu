@@ -8,18 +8,23 @@ on:
       - ".github/workflows/resolve-baseline.yml"
       - "tools/find_patch_baseline.py"
       - "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+      - "kernel_patches/patchset.json"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: susfs-baseline-resolver-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout SUSFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Load patchset manifest
         shell: bash
@@ -34,16 +39,22 @@ jobs:
           print(f"KERNEL_PATCH={data['patches']['kernel']}")
           PY
 
-      - name: Fetch recent Android common history without blobs
+      - name: Fetch bounded Android common history without blobs
         shell: bash
         run: |
           set -euo pipefail
           repo="$RUNNER_TEMP/common"
           git init "$repo"
           git -C "$repo" remote add origin "$KERNEL_REPO"
-          git -C "$repo" fetch             --depth=3000             --filter=blob:none             origin "$KERNEL_TRACKING"
-          git -C "$repo" checkout --detach FETCH_HEAD
-          echo "tracking_head=$(git -C "$repo" rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          git -C "$repo" fetch \
+            --shallow-since='2026-06-01T00:00:00Z' \
+            --filter=blob:none \
+            origin "$KERNEL_TRACKING"
+
+          head="$(git -C "$repo" rev-parse FETCH_HEAD)"
+          git -C "$repo" update-ref refs/heads/baseline-scan "$head"
+          git -C "$repo" symbolic-ref HEAD refs/heads/baseline-scan
+          echo "tracking_head=$head" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve exact patch-generation baseline
         id: resolve
@@ -51,7 +62,10 @@ jobs:
         run: |
           set -euo pipefail
           output="$(
-            python3 tools/find_patch_baseline.py               --repo "$RUNNER_TEMP/common"               --patch "$KERNEL_PATCH"               --max-commits 3000
+            python3 tools/find_patch_baseline.py \
+              --repo "$RUNNER_TEMP/common" \
+              --patch "$KERNEL_PATCH" \
+              --max-candidates 5000
           )"
           printf '%s\n' "$output"
           printf '%s\n' "$output" >> "$GITHUB_STEP_SUMMARY"
@@ -78,5 +92,5 @@ jobs:
             git -C "$repo" sparse-checkout set --no-cone
           git -C "$repo" checkout --detach "${{ steps.resolve.outputs.commit }}"
 
-          git -C "$repo" apply --check "$KERNEL_PATCH"
+          git -C "$repo" apply --check "$GITHUB_WORKSPACE/$KERNEL_PATCH"
           echo "git apply --check: PASS" >> "$GITHUB_STEP_SUMMARY"

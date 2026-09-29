@@ -37,7 +37,7 @@ jobs:
       ksu_baseline: ${{ steps.manifest.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Load patchset manifest
         id: manifest
@@ -91,7 +91,7 @@ jobs:
       KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Sparse checkout pinned Android common baseline
         shell: bash
@@ -182,7 +182,7 @@ jobs:
       KSU_BASELINE: ${{ needs.syntax.outputs.ksu_baseline }}
     steps:
       - name: Checkout SUSFS
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Sparse checkout moving Android common
         shell: bash
