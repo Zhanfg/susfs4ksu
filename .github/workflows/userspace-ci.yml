@@ -1,0 +1,40 @@
+name: SUSFS userspace CI
+
+on:
+  push:
+    branches:
+      - "modernize/**"
+      - "next-dev"
+      - "next"
+    paths:
+      - "ksu_susfs/**"
+      - "build_ksu_susfs_tool.sh"
+      - ".github/workflows/userspace-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-userspace:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: 27.2.12479018
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager "ndk;${NDK_VERSION}"
+          echo "${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "${GITHUB_PATH}"
+
+      - name: Build ksu_susfs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build_ksu_susfs_tool.sh
+          test -x ksu_module_susfs/tools/ksu_susfs_arm64
+          file ksu_module_susfs/tools/ksu_susfs_arm64
