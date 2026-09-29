@@ -36,6 +36,8 @@
   "oneplus_features": {
     "fuse_bpf": true,
     "fuse_passthrough": true,
-    "vendor_modules_external": true
-  }
+    "vendor_modules_external": true,
+    "fuse_bpf_backing_inode": true
+  },
+  "source_sync": "OnePlus 13 Android 16.0.9.401 OSS sync"
 }
