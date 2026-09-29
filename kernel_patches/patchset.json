@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "susfs_version": "v2.3.0",
+  "lane": "gki-android16-6.12",
+  "kernel": {
+    "repository": "https://android.googlesource.com/kernel/common",
+    "baseline_ref": "android16-6.12-2026-06_r29",
+    "tracking_ref": "android16-6.12",
+    "major_minor": "6.12"
+  },
+  "kernelsu": {
+    "repository": "https://github.com/tiann/KernelSU.git",
+    "baseline_commit": "623eba3e092b911a3a7389b7d87622a5835d2f3a"
+  },
+  "patches": {
+    "kernel": "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch",
+    "kernelsu": "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+  },
+  "canonical_sources": [
+    "kernel_patches/fs/susfs.c",
+    "kernel_patches/include/linux/susfs.h",
+    "kernel_patches/include/linux/susfs_def.h"
+  ]
+}
