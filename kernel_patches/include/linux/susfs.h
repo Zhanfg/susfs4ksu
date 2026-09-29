@@ -23,6 +23,7 @@
 #define putname_safe(name) (IS_ERR(name) ? NULL : putname(name))
 
 bool susfs_is_sus_path_loop_active(void);
+bool susfs_needs_sus_path_loop_refresh(void);
 
 /********/
 /* ENUM */
@@ -45,9 +46,14 @@ struct st_susfs_sus_path {
 	int                                     err;
 };
 
+struct susfs_path_watch_mark;
+
 struct st_susfs_sus_path_list {
 	struct list_head                        list;
 	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
+	struct susfs_path_watch_mark            *watch;
+	bool                                    watch_valid;
+	bool                                    fallback_required;
 };
 #endif
 
