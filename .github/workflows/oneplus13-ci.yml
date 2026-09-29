@@ -1,0 +1,153 @@
+# Registered on the default branch; executes against the OnePlus vendor lane.
+name: OnePlus 13 SM8750 SUSFS CI
+
+on:
+  push:
+    branches:
+      - "vendor/oneplus13-sm8750-a16"
+  pull_request:
+    branches:
+      - "next-6.6"
+    paths:
+      - "kernel_patches/**"
+      - "tools/susfs-patchctl.sh"
+      - "tools/verify_unified_diff.py"
+      - ".github/workflows/oneplus13-ci.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 2,5"
+
+concurrency:
+  group: oneplus13-susfs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  patch-direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Load OnePlus manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          d=json.loads(Path("kernel_patches/patchset.json").read_text())
+          print(f"KERNEL_REPO={d['kernel']['repository']}")
+          print(f"KERNEL_COMMIT={d['kernel']['baseline_commit']}")
+          print(f"KERNEL_VERSION={d['kernel']['baseline_version']}")
+          print(f"KERNEL_PATCH={d['patches']['kernel']}")
+          print(f"KSU_REPO={d['kernelsu']['repository']}")
+          print(f"KSU_COMMIT={d['kernelsu']['baseline_commit']}")
+          print(f"VENDOR_REPO={d['vendor_kernel']['repository']}")
+          print(f"VENDOR_COMMIT={d['vendor_kernel']['baseline_commit']}")
+          print(f"MODULES_REPO={d['modules_and_devicetree']['repository']}")
+          print(f"MODULES_COMMIT={d['modules_and_devicetree']['baseline_commit']}")
+          PY
+
+      - name: Validate patch syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/verify_unified_diff.py
+
+      - name: Sparse checkout exact OnePlus common kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          common="$RUNNER_TEMP/oneplus-common"
+          mkdir -p "$common"
+
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$KERNEL_PATCH"             > "$RUNNER_TEMP/oneplus-sparse.txt"
+          {
+            echo "/Makefile"
+            echo "/arch/arm64/configs/gki_defconfig"
+            echo "/fs/fuse/fuse_i.h"
+          } >> "$RUNNER_TEMP/oneplus-sparse.txt"
+
+          git -C "$common" init -q
+          git -C "$common" remote add origin "$KERNEL_REPO"
+          git -C "$common" sparse-checkout init --no-cone
+          xargs -a "$RUNNER_TEMP/oneplus-sparse.txt"             git -C "$common" sparse-checkout set --no-cone
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_COMMIT"
+          git -C "$common" checkout --detach FETCH_HEAD
+          test "$(git -C "$common" rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+          actual_version="$(
+            awk -F= '
+              /^VERSION[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); v=$2}
+              /^PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); p=$2}
+              /^SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); s=$2}
+              END {print v "." p "." s}
+            ' "$common/Makefile"
+          )"
+          test "$actual_version" = "$KERNEL_VERSION"
+
+          grep -q '^CONFIG_FUSE_BPF=y$' "$common/arch/arm64/configs/gki_defconfig"
+          grep -q 'struct inode \*backing_inode;' "$common/fs/fuse/fuse_i.h"
+
+      - name: Checkout pinned KernelSU
+        shell: bash
+        run: |
+          set -euo pipefail
+          ksu="$RUNNER_TEMP/KernelSU"
+          git init -q "$ksu"
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_COMMIT"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_COMMIT"
+
+      - name: Direct preflight on OnePlus 6.6.118
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/susfs-patchctl.sh check             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+
+      - name: Apply and verify idempotency
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+          tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
+
+  oss-drift:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Compare OnePlus OSS branch heads with pinned baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, subprocess, sys
+          d=json.loads(pathlib.Path("kernel_patches/patchset.json").read_text())
+          items=[
+            ("common", d["kernel"]),
+            ("vendor", d["vendor_kernel"]),
+            ("modules", d["modules_and_devicetree"]),
+          ]
+          drift=False
+          for name,item in items:
+            out=subprocess.check_output(
+              ["git","ls-remote",item["repository"],f"refs/heads/{item['baseline_ref']}"],
+              text=True,
+            ).strip()
+            head=out.split()[0] if out else ""
+            pinned=item["baseline_commit"]
+            print(f"{name}: head={head} pinned={pinned}")
+            if head != pinned:
+              drift=True
+          if drift:
+            print("OnePlus OSS has moved; re-audit required.", file=sys.stderr)
+            sys.exit(1)
+          PY
