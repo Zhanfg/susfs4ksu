@@ -39,5 +39,9 @@
     "vendor_modules_external": true,
     "fuse_bpf_backing_inode": true
   },
-  "source_sync": "OnePlus 13 Android 16.0.9.401 OSS sync"
+  "source_sync": "OnePlus 13 Android 16.0.9.401 OSS sync",
+  "kmi": {
+    "vendor_symbol_list": "android/abi_gki_aarch64_oplus",
+    "vendor_symbol_list_blob": "63af968790ce4913be329d169f3a383b0ffd6afe"
+  }
 }
