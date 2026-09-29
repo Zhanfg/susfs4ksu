@@ -40,17 +40,18 @@ DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 #define SUSFS_LOGE(fmt, ...) 
 #endif
 
-/* sus_path */
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
-static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
-static LIST_HEAD(LH_SUS_PATH_LOOP);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
 
 bool susfs_is_sus_path_loop_active(void)
 {
 	return static_branch_unlikely(&susfs_has_sus_path_loop);
 }
+
+/* sus_path */
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
+static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
+static LIST_HEAD(LH_SUS_PATH_LOOP);
 
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
