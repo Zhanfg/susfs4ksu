@@ -1,0 +1,55 @@
+name: OnePlus 13 official workspace CI
+
+on:
+  push:
+    branches:
+      - "vendor/oneplus13-sm8750-a16"
+    paths:
+      - "tools/oneplus13-workspace.sh"
+      - "kernel_patches/patchset.json"
+      - ".github/workflows/oneplus13-workspace-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: oneplus13-workspace-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sun-perf-query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Install workspace dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rsync
+
+      - name: Compose public ACK plus exact OnePlus OSS workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h
+          bash tools/oneplus13-workspace.sh             --workspace "$RUNNER_TEMP/oneplus13-kernel-platform"             --mode query
+          df -h
+
+      - name: Record resolved official targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          {
+            echo "### OnePlus 13 official Kleaf topology"
+            echo "- target: `//msm-kernel:sun_perf`"
+            echo "- dist: `//msm-kernel:sun_perf_dist`"
+            echo "- common: `$(git -C "$ws/common" rev-parse HEAD)`"
+            echo "- msm-kernel: `$(git -C "$ws/msm-kernel" rev-parse HEAD)`"
+            echo "- kernel: `$(awk -F= '/^VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);v=$2}/^PATCHLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);p=$2}/^SUBLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);s=$2}END{print v "." p "." s}' "$ws/common/Makefile")`"
+          } >> "$GITHUB_STEP_SUMMARY"
