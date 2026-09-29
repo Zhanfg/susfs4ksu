@@ -67,6 +67,27 @@ def main() -> int:
     require(core, "#define SUSFS_KSTAT_HASH_BITS 10", "kstat table sizing")
     require(core, "#define SUSFS_OPEN_REDIRECT_HASH_BITS 10", "redirect table sizing")
 
+    require(
+        core,
+        "DEFINE_STATIC_KEY_FALSE(susfs_has_sus_kstat_rules);",
+        "empty KSTAT jump-label gate",
+    )
+    require(
+        core,
+        "DEFINE_STATIC_KEY_FALSE(susfs_has_open_redirect_rules);",
+        "empty open-redirect jump-label gate",
+    )
+    require(
+        core,
+        "static_branch_enable(&susfs_has_sus_kstat_rules)",
+        "KSTAT gate activates on first valid rule",
+    )
+    require(
+        core,
+        "static_branch_enable(&susfs_has_open_redirect_rules)",
+        "open-redirect gate activates on first valid rule",
+    )
+
     require(core, "DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);", "unused SUS_PATH gate")
     require(core, "DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);", "dynamic path gate")
     require(
