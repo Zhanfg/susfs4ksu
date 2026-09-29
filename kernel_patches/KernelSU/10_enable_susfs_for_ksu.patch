@@ -1133,7 +1133,7 @@ index fbb6c44f..1b34903f 100644
 +    security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
  }
  
-@@ -1129,13 +787,9 @@ static void security_compute_av_user_with_policy(struct selinux_policy *policy,
+@@ -1129,11 +787,7 @@ static void security_compute_av_user_with_policy(struct selinux_policy *policy,
          goto out;
      }
  
