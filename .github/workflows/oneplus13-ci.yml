@@ -41,6 +41,12 @@ jobs:
           set -euo pipefail
           python3 tools/verify-oneplus13-policy.py
 
+      - name: Verify event-driven path watcher invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/verify-oneplus13-events.py
+
       - name: Load OnePlus manifest
         shell: bash
         run: |
