@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - "vendor/oneplus13-sm8750-a16"
+  pull_request:
+    branches:
+      - "next-6.6"
     paths:
       - "kernel_patches/**"
       - "tools/susfs-patchctl.sh"
