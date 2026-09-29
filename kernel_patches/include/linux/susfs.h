@@ -198,10 +198,10 @@ struct st_susfs_capabilities {
 /* FORWARD DECLARATION */
 /***********************/
 /* sus_path */
+bool susfs_is_sus_path_loop_active(void);
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 void susfs_add_sus_path(void __user **user_info);
 void susfs_add_sus_path_loop(void __user **user_info);
-bool susfs_is_sus_path_loop_active(void);
 #endif
 
 /* sus_mount */
