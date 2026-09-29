@@ -1146,7 +1146,6 @@ index fbb6c44f..1b34903f 100644
  out:
      return;
  allow:
-
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 index f5cd7bf2..e784aba5 100644
 --- a/kernel/feature/sucompat.c
