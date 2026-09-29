@@ -79,17 +79,17 @@ jobs:
         run: |
           set -euo pipefail
           ./build_all.sh
-          test -x ksu_module_susfs/tools/ksu_susfs_arm64
-          test -s ksu_module_susfs.zip
-          file ksu_module_susfs/tools/ksu_susfs_arm64
-          sha256sum ksu_module_susfs/tools/ksu_susfs_arm64 ksu_module_susfs.zip
+          test -x .build/dist/ksu_susfs_arm64
+          test -s .build/dist/ksu_module_susfs.zip
+          file .build/dist/ksu_susfs_arm64
+          sha256sum .build/dist/ksu_susfs_arm64 .build/dist/ksu_module_susfs.zip
 
       - name: Verify reproducible module archive
         shell: bash
         run: |
           set -euo pipefail
-          first_sha="$(sha256sum ksu_module_susfs.zip | awk '{print $1}')"
-          ./build_ksu_module.sh --output "$RUNNER_TEMP/ksu_module_susfs-second.zip"
+          first_sha="$(sha256sum .build/dist/ksu_module_susfs.zip | awk '{print $1}')"
+          ./build_ksu_module.sh --tool .build/dist/ksu_susfs_arm64 --output "$RUNNER_TEMP/ksu_module_susfs-second.zip"
           second_sha="$(sha256sum "$RUNNER_TEMP/ksu_module_susfs-second.zip" | awk '{print $1}')"
           echo "first=$first_sha"
           echo "second=$second_sha"
@@ -100,8 +100,8 @@ jobs:
         with:
           name: susfs-next-arm64-${{ github.sha }}
           path: |
-            ksu_module_susfs.zip
-            ksu_module_susfs/tools/ksu_susfs_arm64
+            .build/dist/ksu_module_susfs.zip
+            .build/dist/ksu_susfs_arm64
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
