@@ -65,7 +65,7 @@ jobs:
           grep -q '^CONFIG_KSU_SUSFS=y$' "$ws/common/susfs_defconfig"
           grep -q 'exports_files(\["susfs_defconfig"\])' "$ws/common/BUILD.bazel"
 
-      - name: Analyze sun_perf with SUSFS defconfig fragment
+      - name: Analyze 4K and 16K sun perf targets with SUSFS
         shell: bash
         run: |
           set -euo pipefail
@@ -73,10 +73,18 @@ jobs:
           cd "$ws"
 
           ./tools/bazel query //common:susfs_defconfig
+          ./tools/bazel query //msm-kernel:sun_perf
+          ./tools/bazel query //msm-kernel:sun16k_perf
+
           ./tools/bazel build \
             --nobuild \
             --defconfig_fragment=//common:susfs_defconfig \
             //msm-kernel:sun_perf
+
+          ./tools/bazel build \
+            --nobuild \
+            --defconfig_fragment=//common:susfs_defconfig \
+            //msm-kernel:sun16k_perf
 
       - name: Record resolved official targets
         shell: bash
@@ -94,10 +102,11 @@ jobs:
 
           {
             echo "### OnePlus 13 official Kleaf topology"
-            echo "- target: `//msm-kernel:sun_perf`"
+            echo "- 4K target: `//msm-kernel:sun_perf`"
+            echo "- 16K target: `//msm-kernel:sun16k_perf`"
             echo "- dist: `//msm-kernel:sun_perf_dist`"
             echo "- SUSFS fragment: `//common:susfs_defconfig`"
-            echo "- analysis: `sun_perf --defconfig_fragment=//common:susfs_defconfig`"
+            echo "- analysis: both perf targets with `--defconfig_fragment=//common:susfs_defconfig`"
             echo "- common: `$(git -C "$ws/common" rev-parse HEAD)`"
             echo "- msm-kernel: `$(git -C "$ws/msm-kernel" rev-parse HEAD)`"
             echo "- kernel: `$kernel_version`"

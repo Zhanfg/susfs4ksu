@@ -109,12 +109,23 @@ done
 clone_exact "$COMMON_REPO" "$COMMON_SHA" "$WORKSPACE/common"
 clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 
+# Match OnePlus build_with_bazel.py / prepare_vendor.sh glue. Qualcomm's
+# msm-kernel rules intentionally load these extensions through //build.
+mkdir -p "$WORKSPACE/build"
+ln -sfn ../msm-kernel/msm_kernel_extensions.bzl \
+  "$WORKSPACE/build/msm_kernel_extensions.bzl"
+if [ -f "$WORKSPACE/bootable/bootloader/edk2/abl_extensions.bzl" ]; then
+  ln -sfn ../bootable/bootloader/edk2/abl_extensions.bzl \
+    "$WORKSPACE/build/abl_extensions.bzl"
+fi
+
 # The OnePlus msm-kernel BUILD graph imports OPlus Bazel helpers from the
 # modules+DT overlay. Verify the structural contract before invoking Bazel.
 for required in \
   "$WORKSPACE/tools/bazel" \
   "$WORKSPACE/build_with_bazel.py" \
   "$WORKSPACE/build/android/prepare_vendor.sh" \
+  "$WORKSPACE/build/msm_kernel_extensions.bzl" \
   "$WORKSPACE/oplus/bazel/oplus_modules_define.bzl" \
   "$WORKSPACE/oplus/config/modules.ext.oplus" \
   "$WORKSPACE/msm-kernel/sun.bzl" \
@@ -140,6 +151,7 @@ if [ "$MODE" = "query" ]; then
     cd "$WORKSPACE"
     ./tools/bazel query //msm-kernel:sun_perf
     ./tools/bazel query //msm-kernel:sun_perf_dist
+    ./tools/bazel query //msm-kernel:sun16k_perf
   )
 fi
 
