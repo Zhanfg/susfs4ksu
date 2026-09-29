@@ -145,6 +145,7 @@ out_copy_to_user:
 
 void susfs_add_sus_path_loop(void __user **user_info) {
 	struct st_susfs_sus_path_list *new_list = NULL;
+	struct st_susfs_sus_path_list *cursor = NULL;
 	struct st_susfs_sus_path info = {0};
 
 	if (copy_from_user(&info, (struct st_susfs_sus_path __user*)*user_info, sizeof(info))) {
@@ -166,6 +167,16 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
+	list_for_each_entry(cursor, &LH_SUS_PATH_LOOP, list) {
+		if (!strcmp(cursor->target_pathname, new_list->target_pathname)) {
+			mutex_unlock(&susfs_mutex_lock_sus_path);
+			kfree(new_list);
+			SUSFS_LOGI("target_pathname '%s' is already in LH_SUS_PATH_LOOP\n",
+					info.target_pathname);
+			info.err = 0;
+			goto out_copy_to_user;
+		}
+	}
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
 	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
 		static_branch_enable(&susfs_has_sus_path_loop);
