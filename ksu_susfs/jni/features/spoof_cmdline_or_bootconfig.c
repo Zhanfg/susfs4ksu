@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "spoof_uname.h"
 
-#define CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG 0x555b0
 
 #define SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE 8192
 
@@ -83,7 +83,7 @@ int set_cmdline_or_bootconfig(int argc, char *argv[]) {
 	fclose(file);
 	info->fake_cmdline_or_bootconfig[file_size] = '\0';
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG, info);
+	susfs_control_call(CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG, info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG);
 	err = info->err;
 	free(info);
