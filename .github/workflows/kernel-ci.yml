@@ -25,8 +25,6 @@ env:
   PAHOLE_REPO: https://github.com/acmel/dwarves.git
   PAHOLE_COMMIT: fa725d687ce3a712ef296b46bc63ea57ef466014
   PAHOLE_PREFIX: /home/runner/.cache/pahole/v1.32
-  PAHOLE_VERSION: v1.30
-  PAHOLE_PREFIX: /home/runner/.cache/susfs-tools/pahole-v1.30
 
 jobs:
   build-gki-612:
@@ -57,7 +55,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          packages=(bc bison flex libssl-dev libelf-dev dwarves ccache clang lld llvm cmake pkg-config libdw-dev zlib1g-dev)
+          packages=(bc bison flex libssl-dev libelf-dev dwarves ccache clang lld llvm cmake ninja-build pkg-config libdw-dev zlib1g-dev)
           missing=()
 
           for package in "${packages[@]}"; do
@@ -74,31 +72,6 @@ jobs:
           echo "Installing missing packages: ${missing[*]}"
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends "${missing[@]}"
-
-      - name: Restore pinned pahole
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/susfs-tools/pahole-v1.30
-          key: susfs-pahole-${{ runner.os }}-v1.30
-
-      - name: Build pinned pahole with dynamic per-CPU BTF storage
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -x "$PAHOLE_PREFIX/bin/pahole" ]; then
-            src="$RUNNER_TEMP/dwarves"
-            rm -rf "$src"
-            git clone               --depth=1               --branch "$PAHOLE_VERSION"               --recurse-submodules               --shallow-submodules               https://github.com/acmel/dwarves.git               "$src"
-
-            cmake               -S "$src"               -B "$src/build"               -DCMAKE_BUILD_TYPE=Release               -DCMAKE_INSTALL_PREFIX="$PAHOLE_PREFIX"               -DCMAKE_INSTALL_LIBDIR=lib               -DBUILD_SHARED_LIBS=OFF
-
-            cmake --build "$src/build" --parallel
-            cmake --install "$src/build"
-          fi
-
-          echo "$PAHOLE_PREFIX/bin" >> "$GITHUB_PATH"
-          "$PAHOLE_PREFIX/bin/pahole" --version
 
       - name: Restore pinned pahole cache
         id: pahole-cache
