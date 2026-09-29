@@ -117,6 +117,242 @@ jobs:
           bash tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
           bash tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/oneplus-common"             --ksu-tree "$RUNNER_TEMP/KernelSU"
 
+  kmi-surface:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Guard OPlus KMI/UAPI surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch="kernel_patches/50_add_susfs_in_gki-android15-6.6.patch"
+
+          if grep -Eq '^diff --git a/(android/abi_|include/uapi/|include/trace/hooks/)' "$patch"; then
+            echo "SUSFS kernel patch modifies OPlus ABI/UAPI/vendor-hook surface." >&2
+            exit 1
+          fi
+
+          if grep -Eq '^\+.*EXPORT_SYMBOL(_GPL)?\(' "$patch"; then
+            echo "SUSFS kernel patch adds an exported symbol; KMI review required." >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          d=json.loads(Path("kernel_patches/patchset.json").read_text())
+          kmi=d["kmi"]
+          assert kmi["vendor_symbol_list"] == "android/abi_gki_aarch64_oplus"
+          assert kmi["vendor_symbol_list_blob"] == "63af968790ce4913be329d169f3a383b0ffd6afe"
+          print("OPlus KMI manifest pin verified")
+          PY
+
+  compile-touched:
+    needs: patch-direct
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Load OnePlus manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          d=json.loads(Path("kernel_patches/patchset.json").read_text())
+          print(f"KERNEL_REPO={d['kernel']['repository']}")
+          print(f"KERNEL_COMMIT={d['kernel']['baseline_commit']}")
+          print(f"KERNEL_PATCH={d['patches']['kernel']}")
+          print(f"KSU_REPO={d['kernelsu']['repository']}")
+          print(f"KSU_COMMIT={d['kernelsu']['baseline_commit']}")
+          print(f"KSU_PATCH={d['patches']['kernelsu']}")
+          PY
+
+      - name: Install LLVM build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(bc bison flex libssl-dev libelf-dev clang lld llvm)
+          missing=()
+          for package in "${packages[@]}"; do
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed'; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+
+      - name: Checkout exact OnePlus common and KernelSU
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/oneplus-compile"
+          kernel="$root/common"
+          ksu="$root/KernelSU"
+          rm -rf "$root"
+          mkdir -p "$kernel" "$ksu"
+
+          git -C "$kernel" init -q
+          git -C "$kernel" remote add origin "$KERNEL_REPO"
+          git -C "$kernel" fetch --depth=1 --filter=blob:none origin "$KERNEL_COMMIT"
+          git -C "$kernel" checkout --detach FETCH_HEAD
+          test "$(git -C "$kernel" rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+          git -C "$ksu" init -q
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_COMMIT"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_COMMIT"
+
+      - name: Apply OnePlus SUSFS patchset
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/susfs-patchctl.sh apply \
+            --require-direct \
+            --kernel-tree "$RUNNER_TEMP/oneplus-compile/common" \
+            --ksu-tree "$RUNNER_TEMP/oneplus-compile/KernelSU"
+
+      - name: Integrate KernelSU and configure OnePlus GKI
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/oneplus-compile/common"
+          out="$RUNNER_TEMP/oneplus-out"
+
+          ln -sfn ../../KernelSU/kernel "$kernel/drivers/kernelsu"
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel/drivers/Makefile" \
+            || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$kernel/drivers/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig" \
+            || sed -i '/^endmenu/i\source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"
+
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
+          "$kernel/scripts/config" --file "$out/.config" \
+            -e KSU \
+            -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH \
+            -e KSU_SUSFS_SUS_MOUNT \
+            -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME \
+            -e KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT \
+            -e KSU_SUSFS_SUS_MAP
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
+
+          grep -q '^CONFIG_FUSE_BPF=y    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Compare OnePlus OSS branch heads with pinned baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, subprocess, sys
+          d=json.loads(pathlib.Path("kernel_patches/patchset.json").read_text())
+          items=[
+            ("common", d["kernel"]),
+            ("vendor", d["vendor_kernel"]),
+            ("modules", d["modules_and_devicetree"]),
+          ]
+          drift=False
+          for name,item in items:
+            out=subprocess.check_output(
+              ["git","ls-remote",item["repository"],f"refs/heads/{item['baseline_ref']}"],
+              text=True,
+            ).strip()
+            head=out.split()[0] if out else ""
+            pinned=item["baseline_commit"]
+            print(f"{name}: head={head} pinned={pinned}")
+            if head != pinned:
+              drift=True
+          if drift:
+            print("OnePlus OSS has moved; re-audit required.", file=sys.stderr)
+            sys.exit(1)
+          PY
+ "$out/.config"
+          grep -q '^CONFIG_KSU_SUSFS=y    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Compare OnePlus OSS branch heads with pinned baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, subprocess, sys
+          d=json.loads(pathlib.Path("kernel_patches/patchset.json").read_text())
+          items=[
+            ("common", d["kernel"]),
+            ("vendor", d["vendor_kernel"]),
+            ("modules", d["modules_and_devicetree"]),
+          ]
+          drift=False
+          for name,item in items:
+            out=subprocess.check_output(
+              ["git","ls-remote",item["repository"],f"refs/heads/{item['baseline_ref']}"],
+              text=True,
+            ).strip()
+            head=out.split()[0] if out else ""
+            pinned=item["baseline_commit"]
+            print(f"{name}: head={head} pinned={pinned}")
+            if head != pinned:
+              drift=True
+          if drift:
+            print("OnePlus OSS has moved; re-audit required.", file=sys.stderr)
+            sys.exit(1)
+          PY
+ "$out/.config"
+
+      - name: Compile every SUSFS-touched object
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/oneplus-compile/common"
+          out="$RUNNER_TEMP/oneplus-out"
+          targets="$RUNNER_TEMP/oneplus-touched-objects.txt"
+
+          python3 - <<'PY' > "$targets"
+          import os
+          import re
+          from pathlib import Path
+
+          targets={"fs/susfs.o"}
+
+          for line in Path(os.environ["KERNEL_PATCH"]).read_text().splitlines():
+              m=re.match(r"diff --git a/(.+\.c) b/(.+\.c)$", line)
+              if m:
+                  targets.add(m.group(2)[:-2] + ".o")
+
+          for line in Path(os.environ["KSU_PATCH"]).read_text().splitlines():
+              m=re.match(r"diff --git a/kernel/(.+\.c) b/kernel/(.+\.c)$", line)
+              if m:
+                  targets.add("drivers/kernelsu/" + m.group(2)[:-2] + ".o")
+
+          for target in sorted(targets):
+              print(target)
+          PY
+
+          echo "Compiling $(wc -l < "$targets") OnePlus touched objects:"
+          cat "$targets"
+          mapfile -t objects < "$targets"
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          if [ "$jobs" -gt 4 ]; then jobs=4; fi
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 -j"$jobs" "${objects[@]}"
+
   oss-drift:
     runs-on: ubuntu-latest
     continue-on-error: true
