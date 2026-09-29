@@ -1,0 +1,41 @@
+name: Import SUSFS upstream
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/import-upstream.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: susfs-upstream-import
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror official GitLab branches and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          UPSTREAM_URL: https://gitlab.com/simonpunk/susfs4ksu.git
+        run: |
+          set -euo pipefail
+          git clone --bare "$UPSTREAM_URL" upstream.git
+          cd upstream.git
+
+          git remote add github "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPOSITORY}.git"
+
+          # Preserve upstream Git history and object IDs exactly.
+          git push github --force 'refs/heads/*:refs/heads/*'
+          git push github --force 'refs/tags/*:refs/tags/*'
+
+          echo "Imported branches:"
+          git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/
+          echo "Imported tags:"
+          git for-each-ref --format='%(refname:short) %(objectname)' refs/tags/
