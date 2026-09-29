@@ -212,7 +212,7 @@ jobs:
           git -C "$common" sparse-checkout init --no-cone
           xargs -a "$RUNNER_TEMP/kernel-sparse.txt"             git -C "$common" sparse-checkout set --no-cone
           git -C "$common" fetch             --shallow-since='2026-01-01T00:00:00Z'             --filter=blob:none             origin "$KERNEL_REF"
-          tracking_head="$(git -C "$common" rev-parse FETCH_HEAD)"
+          tracking_head="$(git -C "$common" rev-parse "FETCH_HEAD^{commit}")"
           git -C "$common" checkout --detach "$tracking_head"
 
           python3 tools/hydrate_patch_bases.py             --repo "$common"             --patch "$KERNEL_PATCH"
