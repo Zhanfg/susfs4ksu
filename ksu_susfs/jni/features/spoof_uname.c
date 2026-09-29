@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "spoof_uname.h"
 
-#define CMD_SUSFS_SET_UNAME 0x55590
 
 #ifndef __NEW_UTS_LEN
 #define __NEW_UTS_LEN 64
@@ -56,7 +56,7 @@ int set_uname(int argc, char *argv[]) {
 	strncpy(info.release, argv[2], __NEW_UTS_LEN);
 	strncpy(info.version, argv[3], __NEW_UTS_LEN);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_SET_UNAME, &info);
+	susfs_control_call(CMD_SUSFS_SET_UNAME, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_SET_UNAME);
 	return info.err;
 }
