@@ -222,9 +222,31 @@ patch_state() {
 		echo "applied"
 	elif git -C "$tree" apply --check "$patch" >/dev/null 2>&1; then
 		echo "ready"
+	elif git -C "$tree" apply --3way --check "$patch" >/dev/null 2>&1; then
+		echo "ready-3way"
 	else
 		echo "conflict"
 	fi
+}
+
+apply_patch_by_state() {
+	local tree="$1" patch="$2" state="$3" label="$4"
+	case "$state" in
+		ready)
+			info "applying $label patch (direct)"
+			git -C "$tree" apply --whitespace=nowarn "$patch"
+			;;
+		ready-3way)
+			info "applying $label patch (3-way)"
+			git -C "$tree" apply --3way --whitespace=nowarn "$patch"
+			;;
+		applied)
+			info "$label patch already applied"
+			;;
+		*)
+			die "$label patch is not applicable: $state"
+			;;
+	esac
 }
 
 patch_paths() {
@@ -363,10 +385,10 @@ preflight() {
 		die "KernelSU patch preflight failed"
 	}
 
-	if [ "$KERNEL_STATE" = "ready" ]; then
+	if [ "$KERNEL_STATE" = "ready" ] || [ "$KERNEL_STATE" = "ready-3way" ]; then
 		assert_touched_files_clean "$KERNEL_TREE" "$KERNEL_PATCH" "kernel"
 	fi
-	if [ "$KSU_STATE" = "ready" ]; then
+	if [ "$KSU_STATE" = "ready" ] || [ "$KSU_STATE" = "ready-3way" ]; then
 		assert_touched_files_clean "$KSU_TREE" "$KSU_PATCH" "KernelSU"
 	fi
 	assert_source_safe
@@ -391,15 +413,13 @@ case "$MODE" in
 		backup_sources
 		trap rollback_on_exit EXIT INT TERM
 
-		if [ "$KERNEL_STATE" = "ready" ]; then
-			info "applying kernel patch"
-			git -C "$KERNEL_TREE" apply --whitespace=nowarn "$KERNEL_PATCH"
+		if [ "$KERNEL_STATE" = "ready" ] || [ "$KERNEL_STATE" = "ready-3way" ]; then
+			apply_patch_by_state "$KERNEL_TREE" "$KERNEL_PATCH" "$KERNEL_STATE" "kernel"
 			kernel_applied_now=1
 		fi
 
-		if [ "$KSU_STATE" = "ready" ]; then
-			info "applying KernelSU patch"
-			git -C "$KSU_TREE" apply --whitespace=nowarn "$KSU_PATCH"
+		if [ "$KSU_STATE" = "ready" ] || [ "$KSU_STATE" = "ready-3way" ]; then
+			apply_patch_by_state "$KSU_TREE" "$KSU_PATCH" "$KSU_STATE" "KernelSU"
 			ksu_applied_now=1
 		fi
 
