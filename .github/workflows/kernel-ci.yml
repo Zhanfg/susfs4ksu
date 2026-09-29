@@ -85,10 +85,31 @@ jobs:
           mkdir -p "$RUNNER_TEMP/integration"
 
           common="$RUNNER_TEMP/integration/common"
+          archive="$RUNNER_TEMP/android-common-${KERNEL_BASELINE_COMMIT}.tar.gz"
+          archive_url="${KERNEL_REPO%/}/+archive/${KERNEL_BASELINE_COMMIT}.tar.gz"
+          source_mode="archive"
+
+          rm -rf "$common"
           mkdir -p "$common"
 
-          archive_url="${KERNEL_REPO%/}/+archive/${KERNEL_BASELINE_COMMIT}.tar.gz"
-          curl --retry 3 --retry-all-errors -fsSL "$archive_url"             | tar -xzf - -C "$common"
+          if curl             --retry 2             --retry-delay 1             --retry-all-errors             --connect-timeout 15             --max-time 180             -fL "$archive_url"             -o "$archive"; then
+            tar -xzf "$archive" -C "$common"
+            # patchctl needs Git apply/reverse semantics, not repository history.
+            git -C "$common" init -q
+            git -C "$common" config user.name "SUSFS CI"
+            git -C "$common" config user.email "ci@example.invalid"
+          else
+            echo "[!] Gitiles archive unavailable; falling back to shallow exact-SHA Git fetch."
+            source_mode="git-fallback"
+            rm -f "$archive"
+            rm -rf "$common"
+            mkdir -p "$common"
+            git -C "$common" init -q
+            git -C "$common" remote add origin "$KERNEL_REPO"
+            git -C "$common" fetch --depth=1 origin "$KERNEL_BASELINE_COMMIT"
+            git -C "$common" checkout --detach FETCH_HEAD
+            test "$(git -C "$common" rev-parse HEAD)" = "$KERNEL_BASELINE_COMMIT"
+          fi
 
           actual_version="$(
             awk -F= '
@@ -99,12 +120,6 @@ jobs:
             ' "$common/Makefile"
           )"
           test "$actual_version" = "$KERNEL_BASELINE_VERSION"
-
-          # patchctl needs Git apply semantics, not full repository history.
-          # A temporary empty repository is enough for direct apply/reverse checks.
-          git -C "$common" init -q
-          git -C "$common" config user.name "SUSFS CI"
-          git -C "$common" config user.email "ci@example.invalid"
 
           ksu="$RUNNER_TEMP/integration/KernelSU"
           git init "$ksu"
@@ -117,7 +132,8 @@ jobs:
             echo "### Immutable build inputs"
             echo "- Lane: $KERNEL_LANE"
             echo "- Android release ref: $KERNEL_BASELINE_REF"
-            echo "- Android archive SHA: $KERNEL_BASELINE_COMMIT"
+            echo "- Android SHA: $KERNEL_BASELINE_COMMIT"
+            echo "- Source mode: $source_mode"
             echo "- Kernel version: $actual_version"
             echo "- KernelSU SHA: $KSU_BASELINE"
           } >> "$GITHUB_STEP_SUMMARY"
