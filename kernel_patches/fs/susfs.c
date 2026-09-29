@@ -271,7 +271,15 @@ out_copy_to_user:
 /* sus_kstat */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 static DEFINE_MUTEX(susfs_mutex_lock_sus_kstat);
-static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, 14);
+/*
+ * Workload-oriented sizing: SUSFS policy sets are normally small, while the
+ * old 14-bit table reserved 16,384 buckets unconditionally. 10 bits keeps
+ * 1,024 buckets (8 KiB on 64-bit) without changing lookup/update/RCU
+ * semantics. Keep this internal until runtime statistics justify a dynamic
+ * container.
+ */
+#define SUSFS_KSTAT_HASH_BITS 10
+static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, SUSFS_KSTAT_HASH_BITS);
 
 extern int calculate_f_flags_wrapper(struct vfsmount *mnt);
 extern int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf);
@@ -868,7 +876,8 @@ void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 /* open_redirect */
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
-static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
+#define SUSFS_OPEN_REDIRECT_HASH_BITS 10
+static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, SUSFS_OPEN_REDIRECT_HASH_BITS);
 DEFINE_SRCU(susfs_srcu_open_redirect);
 
 void susfs_add_open_redirect(void __user **user_info) {
