@@ -3,7 +3,7 @@ PATH=/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH
 
 MODDIR=${0%/*}
 CONFIG_FILE="${SUSFS_CONFIG:-${MODDIR}/config/default.conf}"
-RUNTIME_DIR=/dev/.susfs4ksu
+RUNTIME_DIR="${SUSFS_RUNTIME_DIR:-/dev/.susfs4ksu}"
 SUSFS_BIN="${SUSFS_BIN:-/data/adb/ksu/bin/ksu_susfs}"
 
 CONTROL_BACKEND=
