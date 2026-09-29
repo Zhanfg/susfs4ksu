@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/reboot.h>
 #include <sys/syscall.h>
 #include <errno.h>
@@ -33,13 +34,43 @@ struct st_susfs_version {
 	int err;
 };
 
+struct st_susfs_capabilities {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	uint64_t compiled_features;
+	uint64_t runtime_features;
+	char susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
+	char susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
+	int32_t err;
+	uint32_t reserved;
+};
+
+struct capability_name {
+	uint64_t bit;
+	const char *name;
+};
+
+static const struct capability_name capability_names[] = {
+	{ SUSFS_CAP_SUS_PATH, "sus_path" },
+	{ SUSFS_CAP_SUS_MOUNT, "sus_mount" },
+	{ SUSFS_CAP_SUS_KSTAT, "sus_kstat" },
+	{ SUSFS_CAP_SPOOF_UNAME, "spoof_uname" },
+	{ SUSFS_CAP_ENABLE_LOG, "enable_log" },
+	{ SUSFS_CAP_HIDE_SYMBOLS, "hide_symbols" },
+	{ SUSFS_CAP_SPOOF_CMDLINE_OR_BOOTCONFIG, "spoof_cmdline_or_bootconfig" },
+	{ SUSFS_CAP_OPEN_REDIRECT, "open_redirect" },
+	{ SUSFS_CAP_SUS_MAP, "sus_map" },
+	{ SUSFS_CAP_AVC_LOG_SPOOFING, "avc_log_spoofing" },
+};
+
 void show_print_help(void)
 {
-	log("    show <version|enabled_features|variant|status>\n");
+	log("    show <version|enabled_features|variant|status|capabilities>\n");
 	log("      |--> version: show the current susfs version implemented in kernel\n");
 	log("      |--> enabled_features: show the current implemented susfs features in kernel\n");
 	log("      |--> variant: show the current variant: GKI or NON-GKI\n");
 	log("      |--> status: show version, variant and capabilities in one report\n");
+	log("      |--> capabilities: alias of status; prefers the versioned capability ABI\n");
 	log("\n");
 }
 
@@ -79,7 +110,50 @@ static int query_enabled_features(struct st_susfs_enabled_features *info)
 	return info->err;
 }
 
-static int show_status(void)
+static int query_capabilities(struct st_susfs_capabilities *info)
+{
+	memset(info, 0, sizeof(*info));
+	info->abi_version = SUSFS_CAPS_ABI_VERSION;
+	info->struct_size = sizeof(*info);
+	info->err = ERR_CMD_NOT_SUPPORTED;
+	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC,
+		CMD_SUSFS_QUERY_CAPABILITIES, info);
+	return info->err;
+}
+
+static void print_capability_set(const char *label, uint64_t features)
+{
+	size_t i;
+
+	log("%s:\n", label);
+	for (i = 0; i < sizeof(capability_names) / sizeof(capability_names[0]); i++) {
+		if (features & capability_names[i].bit)
+			log("  %s\n", capability_names[i].name);
+	}
+}
+
+static int show_capabilities(void)
+{
+	struct st_susfs_capabilities info;
+	int err = query_capabilities(&info);
+
+	if (err)
+		return err;
+
+	log("abi_version=%u\n", info.abi_version);
+	log("struct_size=%u\n", info.struct_size);
+	log("version=%s\n", info.susfs_version);
+	log("variant=%s\n", info.susfs_variant);
+	log("compiled_features=0x%016llx\n",
+		(unsigned long long)info.compiled_features);
+	log("runtime_features=0x%016llx\n",
+		(unsigned long long)info.runtime_features);
+	print_capability_set("compiled", info.compiled_features);
+	print_capability_set("runtime_enabled", info.runtime_features);
+	return 0;
+}
+
+static int show_status_legacy(void)
 {
 	struct st_susfs_version version;
 	struct st_susfs_variant variant;
@@ -161,8 +235,13 @@ int show(int argc, char *argv[])
 		return 0;
 	}
 
-	if (!strcmp(argv[2], "status"))
-		return show_status();
+	if (!strcmp(argv[2], "status") || !strcmp(argv[2], "capabilities")) {
+		int err = show_capabilities();
+
+		if (err == ERR_CMD_NOT_SUPPORTED)
+			return show_status_legacy();
+		return err;
+	}
 
 	print_help();
 	return -EINVAL;
