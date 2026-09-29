@@ -761,6 +761,9 @@ int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, b
 void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *out_target_dev) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
+
 	rcu_read_lock();
 	hash_for_each_possible_rcu(SUS_KSTAT_HLIST, entry, node, *out_target_ino) {
 		if (entry->target_dev == *out_target_dev)
@@ -777,6 +780,9 @@ void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *
 
 void susfs_sus_kstat_spoof_proc_fd_seq_show(int *out_target_mnt_id, unsigned long *out_target_ino, dev_t target_dev) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 
 	rcu_read_lock();
 	hash_for_each_possible_rcu(SUS_KSTAT_HLIST, entry, node, *out_target_ino) {
