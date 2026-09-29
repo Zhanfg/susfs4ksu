@@ -2901,7 +2901,7 @@ index de184e10..dbf87206 100644
      }
      if (copy_to_user(arg, &cmd, sizeof(cmd))) {
          pr_err("manage_mark: copy_to_user failed\n");
-@@ -503,6 +467,87 @@ static int do_manage_mark(void __user *arg)
+@@ -503,6 +467,90 @@ static int do_manage_mark(void __user *arg)
      return 0;
  }
  
