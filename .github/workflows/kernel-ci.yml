@@ -9,6 +9,7 @@ on:
     paths:
       - "kernel_patches/**"
       - "tools/susfs-patchctl.sh"
+      - "tools/hydrate_patch_bases.py"
       - ".github/workflows/kernel-ci.yml"
   workflow_dispatch:
 
@@ -41,6 +42,8 @@ jobs:
           data = json.loads(Path("kernel_patches/patchset.json").read_text())
           print(f"KERNEL_REPO={data['kernel']['repository']}")
           print(f"KERNEL_BASELINE={data['kernel']['baseline_ref']}")
+          print(f"KERNEL_TRACKING={data['kernel']['tracking_ref']}")
+          print(f"KERNEL_PATCH={data['patches']['kernel']}")
           print(f"KERNEL_LANE={data['lane']}")
           print(f"KSU_REPO={data['kernelsu']['repository']}")
           print(f"KSU_BASELINE={data['kernelsu']['baseline_commit']}")
@@ -67,7 +70,20 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/integration"
 
-          git clone             --depth=1             --filter=blob:none             --branch "$KERNEL_BASELINE"             "$KERNEL_REPO"             "$RUNNER_TEMP/integration/common"
+          common="$RUNNER_TEMP/integration/common"
+          git init "$common"
+          git -C "$common" remote add origin "$KERNEL_REPO"
+          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE"
+          baseline_head="$(git -C "$common" rev-parse FETCH_HEAD)"
+          git -C "$common" fetch \
+            --shallow-since='2026-06-01T00:00:00Z' \
+            --filter=blob:none \
+            origin "$KERNEL_TRACKING"
+          git -C "$common" checkout --detach "$baseline_head"
+
+          python3 tools/hydrate_patch_bases.py \
+            --repo "$common" \
+            --patch "$KERNEL_PATCH"
 
           git init "$RUNNER_TEMP/integration/KernelSU"
           git -C "$RUNNER_TEMP/integration/KernelSU" remote add origin "$KSU_REPO"
