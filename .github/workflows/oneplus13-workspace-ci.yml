@@ -6,7 +6,9 @@ on:
       - "vendor/oneplus13-sm8750-a16"
     paths:
       - "tools/oneplus13-workspace.sh"
-      - "kernel_patches/patchset.json"
+      - "tools/oneplus13-integrate.sh"
+      - "tools/susfs-patchctl.sh"
+      - "kernel_patches/**"
       - ".github/workflows/oneplus13-workspace-ci.yml"
   workflow_dispatch:
 
@@ -39,6 +41,52 @@ jobs:
           df -h
           bash tools/oneplus13-workspace.sh             --workspace "$RUNNER_TEMP/oneplus13-kernel-platform"             --mode query
           df -h
+
+      - name: Integrate KernelSU + SUSFS into official workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          bash tools/oneplus13-integrate.sh --workspace "$ws"
+
+          test -f "$ws/common/susfs_defconfig"
+          grep -q '^CONFIG_KSU=y
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          {
+            echo "### OnePlus 13 official Kleaf topology"
+            echo "- target: `//msm-kernel:sun_perf`"
+            echo "- dist: `//msm-kernel:sun_perf_dist`"
+            echo "- SUSFS fragment: `//common:susfs_defconfig`"
+            echo "- analysis: `sun_perf --defconfig_fragment=//common:susfs_defconfig`"
+            echo "- common: `$(git -C "$ws/common" rev-parse HEAD)`"
+            echo "- msm-kernel: `$(git -C "$ws/msm-kernel" rev-parse HEAD)`"
+            echo "- kernel: `$(awk -F= '/^VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);v=$2}/^PATCHLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);p=$2}/^SUBLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);s=$2}END{print v "." p "." s}' "$ws/common/Makefile")`"
+          } >> "$GITHUB_STEP_SUMMARY"
+ "$ws/common/susfs_defconfig"
+          grep -q '^CONFIG_KSU_SUSFS=y
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          {
+            echo "### OnePlus 13 official Kleaf topology"
+            echo "- target: `//msm-kernel:sun_perf`"
+            echo "- dist: `//msm-kernel:sun_perf_dist`"
+            echo "- common: `$(git -C "$ws/common" rev-parse HEAD)`"
+            echo "- msm-kernel: `$(git -C "$ws/msm-kernel" rev-parse HEAD)`"
+            echo "- kernel: `$(awk -F= '/^VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);v=$2}/^PATCHLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);p=$2}/^SUBLEVEL[[:space:]]*=/{gsub(/[[:space:]]/,"",$2);s=$2}END{print v "." p "." s}' "$ws/common/Makefile")`"
+          } >> "$GITHUB_STEP_SUMMARY"
+ "$ws/common/susfs_defconfig"
+          grep -q 'exports_files(\["susfs_defconfig"\])' "$ws/common/BUILD.bazel"
+
+      - name: Analyze sun_perf with SUSFS defconfig fragment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          cd "$ws"
+
+          ./tools/bazel query //common:susfs_defconfig
+          ./tools/bazel build             --nobuild             --defconfig_fragment=//common:susfs_defconfig             //msm-kernel:sun_perf
 
       - name: Record resolved official targets
         shell: bash
