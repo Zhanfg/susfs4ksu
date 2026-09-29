@@ -8,16 +8,11 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "show.h"
 
-#define CMD_SUSFS_SHOW_VERSION 0x555e1
-#define CMD_SUSFS_SHOW_ENABLED_FEATURES 0x555e2
-#define CMD_SUSFS_SHOW_VARIANT 0x555e3
 
-#define SUSFS_ENABLED_FEATURES_SIZE 8192
-#define SUSFS_MAX_VERSION_BUFSIZE 16
-#define SUSFS_MAX_VARIANT_BUFSIZE 16
 
 struct st_susfs_enabled_features {
 	char enabled_features[SUSFS_ENABLED_FEATURES_SIZE];
@@ -65,12 +60,13 @@ static const struct capability_name capability_names[] = {
 
 void show_print_help(void)
 {
-	log("    show <version|enabled_features|variant|status|capabilities>\n");
+	log("    show <version|enabled_features|variant|status|capabilities|backend>\n");
 	log("      |--> version: show the current susfs version implemented in kernel\n");
 	log("      |--> enabled_features: show the current implemented susfs features in kernel\n");
 	log("      |--> variant: show the current variant: GKI or NON-GKI\n");
 	log("      |--> status: show version, variant and capabilities in one report\n");
 	log("      |--> capabilities: alias of status; prefers the versioned capability ABI\n");
+	log("      |--> backend: show control-plane transport and compatibility profiles\n");
 	log("\n");
 }
 
@@ -84,8 +80,7 @@ static int query_version(struct st_susfs_version *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC,
-		CMD_SUSFS_SHOW_VERSION, info);
+	susfs_control_call(CMD_SUSFS_SHOW_VERSION, info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_VERSION);
 	return info->err;
 }
@@ -94,8 +89,7 @@ static int query_variant(struct st_susfs_variant *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC,
-		CMD_SUSFS_SHOW_VARIANT, info);
+	susfs_control_call(CMD_SUSFS_SHOW_VARIANT, info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_VARIANT);
 	return info->err;
 }
@@ -104,8 +98,7 @@ static int query_enabled_features(struct st_susfs_enabled_features *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC,
-		CMD_SUSFS_SHOW_ENABLED_FEATURES, info);
+	susfs_control_call(CMD_SUSFS_SHOW_ENABLED_FEATURES, info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_ENABLED_FEATURES);
 	return info->err;
 }
@@ -116,8 +109,7 @@ static int query_capabilities(struct st_susfs_capabilities *info)
 	info->abi_version = SUSFS_CAPS_ABI_VERSION;
 	info->struct_size = sizeof(*info);
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC,
-		CMD_SUSFS_QUERY_CAPABILITIES, info);
+	susfs_control_call(CMD_SUSFS_QUERY_CAPABILITIES, info);
 	return info->err;
 }
 
@@ -130,6 +122,15 @@ static void print_capability_set(const char *label, uint64_t features)
 		if (features & capability_names[i].bit)
 			log("  %s\n", capability_names[i].name);
 	}
+}
+
+static int show_backend(void)
+{
+	log("control_abi=%u\n", susfs_control_abi_version());
+	log("transport=%s\n", susfs_control_transport_name());
+	log("resukisu_compatible=%s\n",
+		susfs_control_has_compat(SUSFS_CONTROL_COMPAT_RESUKISU) ? "yes" : "no");
+	return 0;
 }
 
 static int show_capabilities(void)
@@ -234,6 +235,9 @@ int show(int argc, char *argv[])
 		log("%s\n", info.susfs_variant);
 		return 0;
 	}
+
+	if (!strcmp(argv[2], "backend"))
+		return show_backend();
 
 	if (!strcmp(argv[2], "status") || !strcmp(argv[2], "capabilities")) {
 		int err = show_capabilities();
