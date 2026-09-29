@@ -6,6 +6,7 @@ on:
       - "modernize/**"
       - "next-dev"
       - "next"
+      - "vendor/oneplus13-sm8750-a16-control"
     paths:
       - "ksu_susfs/**"
       - "ksu_module_susfs/**"
