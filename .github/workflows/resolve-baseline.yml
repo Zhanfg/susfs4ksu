@@ -64,6 +64,19 @@ jobs:
         run: |
           set -euo pipefail
           repo="$RUNNER_TEMP/common"
+
+          awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$KERNEL_PATCH" \
+            > "$RUNNER_TEMP/kernel-sparse.txt"
+          {
+            echo "/Makefile"
+            echo "/fs/"
+            echo "/include/linux/"
+          } >> "$RUNNER_TEMP/kernel-sparse.txt"
+
+          git -C "$repo" sparse-checkout init --no-cone
+          xargs -a "$RUNNER_TEMP/kernel-sparse.txt" \
+            git -C "$repo" sparse-checkout set --no-cone
           git -C "$repo" checkout --detach "${{ steps.resolve.outputs.commit }}"
+
           git -C "$repo" apply --check "$KERNEL_PATCH"
           echo "git apply --check: PASS" >> "$GITHUB_STEP_SUMMARY"
