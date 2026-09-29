@@ -46,6 +46,7 @@ DEFINE_STATIC_KEY_FALSE(susfs_is_log_enabled);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
 DEFINE_STATIC_KEY_FALSE(susfs_sus_path_spawn_refresh_needed);
+static atomic_t susfs_path_watch_dirty = ATOMIC_INIT(0);
 
 bool susfs_is_sus_path_loop_active(void)
 {
@@ -54,7 +55,9 @@ bool susfs_is_sus_path_loop_active(void)
 
 bool susfs_needs_sus_path_loop_refresh(void)
 {
-	return static_branch_unlikely(&susfs_sus_path_spawn_refresh_needed);
+	if (static_branch_unlikely(&susfs_sus_path_spawn_refresh_needed))
+		return true;
+	return unlikely(atomic_read(&susfs_path_watch_dirty));
 }
 
 /* sus_path */
@@ -142,6 +145,7 @@ static int susfs_handle_path_watch_event(struct fsnotify_mark *mark, u32 mask,
 		return 0;
 
 	WRITE_ONCE(entry->watch_valid, false);
+	atomic_set(&susfs_path_watch_dirty, 1);
 	atomic_inc(&susfs_path_watch_epoch);
 	schedule_work(&susfs_extra_works);
 	return 0;
@@ -229,6 +233,12 @@ static int susfs_watch_backing_inode(struct st_susfs_sus_path_list *entry,
 	 * fsnotify_add_inode_mark() can identify the current watcher.
 	 */
 	WRITE_ONCE(entry->watch, watch);
+	/*
+	 * Publish validity before attachment. No callback can run before the
+	 * mark is attached; after attachment, an invalidation is then free to
+	 * clear this flag without being overwritten by the setup path.
+	 */
+	WRITE_ONCE(entry->watch_valid, true);
 	ret = fsnotify_add_inode_mark(&watch->mark, backing_inode, 0);
 	if (ret) {
 		if (cmpxchg(&entry->watch, watch, NULL) == watch)
@@ -238,7 +248,6 @@ static int susfs_watch_backing_inode(struct st_susfs_sus_path_list *entry,
 		return ret;
 	}
 
-	WRITE_ONCE(entry->watch_valid, true);
 	return 0;
 }
 #endif /* CONFIG_FUSE_BPF */
@@ -429,6 +438,7 @@ static void susfs_run_sus_path_loop(void)
 	 * keep arriving, preserve correctness by leaving spawn fallback enabled.
 	 */
 	for (pass = 0; pass < 2; pass++) {
+		atomic_set(&susfs_path_watch_dirty, 0);
 		epoch_before = atomic_read(&susfs_path_watch_epoch);
 		fallback_required = false;
 		srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
@@ -444,11 +454,13 @@ static void susfs_run_sus_path_loop(void)
 		}
 
 		srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
-		if (epoch_before == atomic_read(&susfs_path_watch_epoch))
+		if (epoch_before == atomic_read(&susfs_path_watch_epoch) &&
+		    !atomic_read(&susfs_path_watch_dirty))
 			break;
 	}
 
-	if (epoch_before != atomic_read(&susfs_path_watch_epoch))
+	if (epoch_before != atomic_read(&susfs_path_watch_epoch) ||
+	    atomic_read(&susfs_path_watch_dirty))
 		fallback_required = true;
 
 	/*
