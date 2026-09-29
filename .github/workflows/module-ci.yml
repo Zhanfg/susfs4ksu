@@ -1,0 +1,135 @@
+name: SUSFS control module CI
+
+on:
+  push:
+    branches:
+      - "modernize/**"
+      - "next-dev"
+      - "next"
+      - "vendor/oneplus13-sm8750-a16-control"
+      - "vendor/oneplus13-sm8750-a16"
+    paths:
+      - "ksu_module_susfs/**"
+      - ".github/workflows/module-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-module:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in             ksu_module_susfs/controller.sh             ksu_module_susfs/customize.sh             ksu_module_susfs/post-fs-data.sh             ksu_module_susfs/service.sh             ksu_module_susfs/boot-completed.sh             ksu_module_susfs/uninstall.sh             ksu_module_susfs/utils.sh; do
+            dash -n "$f"
+          done
+
+      - name: Enforce no-polling controller policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Eq 'while[[:space:]]+true|sleep[[:space:]]+[0-9]+' ksu_module_susfs/controller.sh
+          ! grep -R -F 'cat <<EOF >/dev/null'             ksu_module_susfs/post-fs-data.sh             ksu_module_susfs/service.sh             ksu_module_susfs/boot-completed.sh
+
+      - name: Validate ReSukiSU-compatible backend selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cat > "$tmp/ksud" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "version" ]; then
+            echo "v2.3.0"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "variant" ]; then
+            echo "GKI"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "enabled_features" ]; then
+            echo "CONFIG_KSU_SUSFS"
+            exit 0
+          fi
+          exit 0
+          EOF
+          chmod +x "$tmp/ksud"
+
+          out="$(
+            SUSFS_KSUD_BIN="$tmp/ksud"             SUSFS_RUNTIME_DIR="$tmp/runtime"             sh ksu_module_susfs/controller.sh backend
+          )"
+          test "$out" = "ksud-susfs"
+
+          SUSFS_KSUD_BIN="$tmp/ksud"           SUSFS_RUNTIME_DIR="$tmp/runtime"           sh ksu_module_susfs/controller.sh status | grep -q '^compat_resukisu=yes$'
+
+      - name: Validate direct fallback backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cat > "$tmp/ksu_susfs" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "version" ]; then
+            echo "v2.3.0"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "backend" ]; then
+            echo "transport=reboot-susfs-v2"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "status" ]; then
+            echo "version=v2.3.0"
+            exit 0
+          fi
+          exit 0
+          EOF
+          chmod +x "$tmp/ksu_susfs"
+
+          out="$(
+            SUSFS_KSUD_BIN=/nonexistent             SUSFS_BIN="$tmp/ksu_susfs"             SUSFS_RUNTIME_DIR="$tmp/runtime"             sh ksu_module_susfs/controller.sh backend
+          )"
+          test "$out" = "reboot-susfs-v2"
+
+      - name: Validate staged declarative apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          log="$tmp/calls.log"
+          cat > "$tmp/ksud" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "version" ]; then
+            echo "v2.3.0"
+            exit 0
+          fi
+          printf '%s\n' "$*" >> "$SUSFS_TEST_LOG"
+          exit 0
+          EOF
+          chmod +x "$tmp/ksud"
+
+          cat > "$tmp/config.conf" <<'EOF'
+          enabled=1
+          logging=0
+          sus_path=/system/test
+          sus_path_loop=/sdcard/test
+          sus_map=/system/lib64/test.so
+          EOF
+
+          export SUSFS_TEST_LOG="$log"
+          export SUSFS_KSUD_BIN="$tmp/ksud"
+          export SUSFS_CONFIG="$tmp/config.conf"
+          export SUSFS_RUNTIME_DIR="$tmp/runtime"
+
+          sh ksu_module_susfs/controller.sh post-fs-data
+          sh ksu_module_susfs/controller.sh boot-completed
+
+          grep -q '^susfs enable_log 0$' "$log"
+          grep -q '^susfs add_sus_path /system/test$' "$log"
+          grep -q '^susfs add_sus_path_loop /sdcard/test$' "$log"
+          grep -q '^susfs add_sus_map /system/lib64/test.so$' "$log"

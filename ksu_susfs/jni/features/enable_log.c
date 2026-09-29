@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "enable_log.h"
 
-#define CMD_SUSFS_ENABLE_LOG 0x555a0
 
 struct st_susfs_log {
 	bool                    enabled;
@@ -43,7 +43,7 @@ int enable_log(int argc, char *argv[]) {
 	}
 	info.enabled = atoi(argv[2]);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ENABLE_LOG, &info);
+	susfs_control_call(CMD_SUSFS_ENABLE_LOG, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ENABLE_LOG);
 	return info.err;
 }

@@ -7,12 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "sus_kstat.h"
 
-#define CMD_SUSFS_ADD_SUS_KSTAT 0x55570
-#define CMD_SUSFS_UPDATE_SUS_KSTAT 0x55571
-#define CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY 0x55572
 
 #define KSTAT_SPOOF_INO (1 << 0)
 #define KSTAT_SPOOF_DEV (1 << 1)
@@ -263,7 +261,7 @@ int add_sus_kstat_statically(int argc, char *argv[]) {
 	strncpy(info.target_pathname, resolved_pathname, SUSFS_MAX_LEN_PATHNAME-1);
 	copy_from_stat_to_sus_kstat(&info, &sb);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY, &info);
+	susfs_control_call(CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY);
 	return info.err;
 }
@@ -299,7 +297,7 @@ int add_sus_kstat(int argc, char *argv[]) {
 	info.flags |= KSTAT_AUTO_SPOOF;
 	copy_from_stat_to_sus_kstat(&info, &sb);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ADD_SUS_KSTAT, &info);
+	susfs_control_call(CMD_SUSFS_ADD_SUS_KSTAT, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_KSTAT);
 	return info.err;
 }
@@ -335,7 +333,7 @@ int update_sus_kstat(int argc, char *argv[]) {
 	info.flags |= KSTAT_AUTO_SPOOF;
 	copy_from_stat_to_sus_kstat(&info, &sb);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_UPDATE_SUS_KSTAT, &info);
+	susfs_control_call(CMD_SUSFS_UPDATE_SUS_KSTAT, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_UPDATE_SUS_KSTAT);
 	return info.err;
 }
@@ -371,7 +369,7 @@ int update_sus_kstat_full_clone(int argc, char *argv[]) {
 	info.flags |= KSTAT_AUTO_SPOOF_FULL_CLONE;
 	copy_from_stat_to_sus_kstat(&info, &sb);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_UPDATE_SUS_KSTAT, &info);
+	susfs_control_call(CMD_SUSFS_UPDATE_SUS_KSTAT, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_UPDATE_SUS_KSTAT);
 	return info.err;
 }
