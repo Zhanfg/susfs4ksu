@@ -1,0 +1,151 @@
+name: SUSFS touched-object compile CI
+
+on:
+  push:
+    branches:
+      - "modernize/**"
+      - "next-dev"
+      - "next"
+    paths:
+      - "kernel_patches/**"
+      - "tools/susfs-patchctl.sh"
+      - ".github/workflows/kernel-object-ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: susfs-object-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile-touched:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Load patchset manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          data = json.loads(Path("kernel_patches/patchset.json").read_text(encoding="utf-8"))
+          print(f"KERNEL_REPO={data['kernel']['repository']}")
+          print(f"KERNEL_COMMIT={data['kernel']['baseline_commit']}")
+          print(f"KERNEL_VERSION={data['kernel']['baseline_version']}")
+          print(f"KERNEL_PATCH={data['patches']['kernel']}")
+          print(f"KSU_REPO={data['kernelsu']['repository']}")
+          print(f"KSU_COMMIT={data['kernelsu']['baseline_commit']}")
+          print(f"KSU_PATCH={data['patches']['kernelsu']}")
+          PY
+
+      - name: Install missing LLVM build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(bc bison flex libssl-dev libelf-dev clang lld llvm)
+          missing=()
+          for package in "${packages[@]}"; do
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed'; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+
+      - name: Checkout immutable integration inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/object-ci"
+          common="$root/common"
+          ksu="$root/KernelSU"
+          mkdir -p "$common" "$ksu"
+
+          git -C "$common" init -q
+          git -C "$common" remote add origin "$KERNEL_REPO"
+          git -C "$common" fetch --depth=1 origin "$KERNEL_COMMIT"
+          git -C "$common" checkout --detach FETCH_HEAD
+          test "$(git -C "$common" rev-parse HEAD)" = "$KERNEL_COMMIT"
+
+          actual_version="$(
+            awk -F= '
+              /^VERSION[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); v=$2}
+              /^PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); p=$2}
+              /^SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); s=$2}
+              END {print v "." p "." s}
+            ' "$common/Makefile"
+          )"
+          test "$actual_version" = "$KERNEL_VERSION"
+
+          git -C "$ksu" init -q
+          git -C "$ksu" remote add origin "$KSU_REPO"
+          git -C "$ksu" fetch --depth=1 origin "$KSU_COMMIT"
+          git -C "$ksu" checkout --detach FETCH_HEAD
+          test "$(git -C "$ksu" rev-parse HEAD)" = "$KSU_COMMIT"
+
+      - name: Apply pinned SUSFS patchset
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tools/susfs-patchctl.sh apply             --require-direct             --kernel-tree "$RUNNER_TEMP/object-ci/common"             --ksu-tree "$RUNNER_TEMP/object-ci/KernelSU"
+
+      - name: Integrate KernelSU and configure GKI
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/object-ci/common"
+          out="$RUNNER_TEMP/object-out"
+
+          ln -sfn ../../KernelSU/kernel "$kernel/drivers/kernelsu"
+          grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel/drivers/Makefile"             || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$kernel/drivers/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"             || sed -i '/^endmenu/i\source "drivers/kernelsu/Kconfig"' "$kernel/drivers/Kconfig"
+
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
+          "$kernel/scripts/config" --file "$out/.config"             -e KSU             -e KSU_SUSFS             -e KSU_SUSFS_SUS_PATH             -e KSU_SUSFS_SUS_MOUNT             -e KSU_SUSFS_SUS_KSTAT             -e KSU_SUSFS_SPOOF_UNAME             -e KSU_SUSFS_ENABLE_LOG             -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS             -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG             -e KSU_SUSFS_OPEN_REDIRECT             -e KSU_SUSFS_SUS_MAP             -e LTO_CLANG             -e LTO_CLANG_THIN
+          make -C "$kernel" O="$out" ARCH=arm64 LLVM=1 olddefconfig
+
+      - name: Build every patch-touched C object
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel="$RUNNER_TEMP/object-ci/common"
+          out="$RUNNER_TEMP/object-out"
+          targets="$RUNNER_TEMP/touched-objects.txt"
+
+          python3 - <<'PY' > "$targets"
+          import os
+          import re
+          from pathlib import Path
+
+          targets = {"fs/susfs.o"}
+
+          kernel_patch = Path(os.environ["KERNEL_PATCH"])
+          for line in kernel_patch.read_text(encoding="utf-8").splitlines():
+              m = re.match(r"diff --git a/(.+\.c) b/(.+\.c)$", line)
+              if m:
+                  targets.add(m.group(2)[:-2] + ".o")
+
+          ksu_patch = Path(os.environ["KSU_PATCH"])
+          for line in ksu_patch.read_text(encoding="utf-8").splitlines():
+              m = re.match(r"diff --git a/kernel/(.+\.c) b/kernel/(.+\.c)$", line)
+              if m:
+                  targets.add("drivers/kernelsu/" + m.group(2)[:-2] + ".o")
+
+          for target in sorted(targets):
+              print(target)
+          PY
+
+          echo "Compiling $(wc -l < "$targets") touched objects:"
+          cat "$targets"
+
+          mapfile -t objects < "$targets"
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          make -C "$kernel"             O="$out"             ARCH=arm64             LLVM=1             -j"$jobs"             "${objects[@]}"
