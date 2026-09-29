@@ -54,11 +54,36 @@ static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
+static inline bool susfs_mapping_is_sus_path(const struct address_space *mapping)
+{
+	return mapping && test_bit(AS_FLAGS_SUS_PATH, &mapping->flags);
+}
+
+static inline bool susfs_is_fuse_sus_path_marked(struct fuse_inode *fi)
+{
+	if (susfs_mapping_is_sus_path(fi->inode.i_mapping))
+		return true;
+#ifdef CONFIG_FUSE_BPF
+	/*
+	 * Dynamic FUSE paths on OnePlus 13 can get a fresh surface inode while
+	 * retaining the same backing inode. Reuse the persistent backing mark
+	 * only when sus_path_loop is active, so ordinary FUSE lookups keep the
+	 * original single-mapping fast path.
+	 */
+	if (susfs_is_sus_path_loop_active() && fi->backing_inode &&
+	    susfs_mapping_is_sus_path(fi->backing_inode->i_mapping))
+		return true;
+#endif
+	return false;
+}
+
 static inline void susfs_mark_fuse_sus_path(struct fuse_inode *fi)
 {
-	set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
+	if (!susfs_mapping_is_sus_path(fi->inode.i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
 #ifdef CONFIG_FUSE_BPF
-	if (fi->backing_inode && fi->backing_inode->i_mapping)
+	if (fi->backing_inode && fi->backing_inode->i_mapping &&
+	    !susfs_mapping_is_sus_path(fi->backing_inode->i_mapping))
 		set_bit(AS_FLAGS_SUS_PATH, &fi->backing_inode->i_mapping->flags);
 #endif
 }
@@ -101,7 +126,8 @@ void susfs_add_sus_path(void __user **user_info) {
 		goto out_path_put_path;
 	}
 
-	set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+	if (!susfs_mapping_is_sus_path(inode->i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
 	SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
 				info.target_pathname, inode->i_ino, inode->i_mapping->flags);
 	info.err = 0;
@@ -181,7 +207,8 @@ static void susfs_run_sus_path_loop(void) {
 				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', fi->inode.i_ino: '%lu', fi->inode.i_mapping->flags: 0x%lx\n",
 						cursor->target_pathname, fi->inode.i_ino, fi->inode.i_mapping->flags);
 			} else {
-				set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+				if (!susfs_mapping_is_sus_path(inode->i_mapping))
+					set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
 				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', inode->i_ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
 						cursor->target_pathname, inode->i_ino, inode->i_mapping->flags);
 			}
@@ -220,13 +247,13 @@ bool susfs_is_inode_sus_path(struct inode *inode)
 			return false;
 		}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(i_uid_into_vfsuid(idmap, &fi->inode).val)))
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val)))
 #else
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(fi->inode.i_uid.val)))
 #endif
 		{
