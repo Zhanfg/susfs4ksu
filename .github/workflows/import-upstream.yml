@@ -1,4 +1,4 @@
-name: Import SUSFS upstream
+name: Sync SUSFS upstream
 
 on:
   push:
@@ -7,12 +7,14 @@ on:
     paths:
       - ".github/workflows/import-upstream.yml"
   workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: susfs-upstream-import
+  group: susfs-upstream-sync
   cancel-in-progress: false
 
 jobs:
@@ -31,11 +33,11 @@ jobs:
 
           git remote add github "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPOSITORY}.git"
 
-          # Preserve upstream Git history and object IDs exactly.
+          # Mirror upstream branches/tags without rewriting their commit history.
           git push github --force 'refs/heads/*:refs/heads/*'
           git push github --force 'refs/tags/*:refs/tags/*'
 
-          echo "Imported branches:"
+          echo "Synced branches:"
           git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/
-          echo "Imported tags:"
+          echo "Synced tags:"
           git for-each-ref --format='%(refname:short) %(objectname)' refs/tags/
