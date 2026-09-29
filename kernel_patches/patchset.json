@@ -23,5 +23,13 @@
     "kernel_patches/fs/susfs.c",
     "kernel_patches/include/linux/susfs.h",
     "kernel_patches/include/linux/susfs_def.h"
-  ]
+  ],
+  "build_tools": {
+    "pahole": {
+      "repository": "https://github.com/acmel/dwarves.git",
+      "version": "v1.32",
+      "commit": "fa725d687ce3a712ef296b46bc63ea57ef466014",
+      "reason": "Avoid legacy 4096 per-CPU variable BTF encoder limit seen in full GKI Image build."
+    }
+  }
 }
