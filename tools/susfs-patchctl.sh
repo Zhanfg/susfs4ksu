@@ -230,8 +230,12 @@ preflight() {
 		die "KernelSU patch preflight failed"
 	}
 
-	assert_touched_files_clean "$KERNEL_TREE" "$KERNEL_PATCH" "kernel"
-	assert_touched_files_clean "$KSU_TREE" "$KSU_PATCH" "KernelSU"
+	if [ "$KERNEL_STATE" = "ready" ]; then
+		assert_touched_files_clean "$KERNEL_TREE" "$KERNEL_PATCH" "kernel"
+	fi
+	if [ "$KSU_STATE" = "ready" ]; then
+		assert_touched_files_clean "$KSU_TREE" "$KSU_PATCH" "KernelSU"
+	fi
 	assert_source_safe
 }
 
