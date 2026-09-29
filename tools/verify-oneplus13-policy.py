@@ -116,8 +116,8 @@ def main() -> int:
     )
     require(
         ksu_effective,
-        "!susfs_is_sus_path_loop_active() || work_pending(&susfs_extra_works)",
-        "empty dynamic-path workqueue suppression",
+        "!susfs_needs_sus_path_loop_refresh() || work_pending(&susfs_extra_works)",
+        "event-aware dynamic-path workqueue suppression",
     )
 
     forbid(
