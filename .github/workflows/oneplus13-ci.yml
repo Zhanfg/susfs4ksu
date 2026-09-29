@@ -34,6 +34,12 @@ jobs:
       - name: Checkout SUSFS
         uses: actions/checkout@v7
 
+      - name: Verify OnePlus optimization policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/verify-oneplus13-policy.py
+
       - name: Load OnePlus manifest
         shell: bash
         run: |
