@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: susfs-baseline-discovery-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   discover:
     runs-on: ubuntu-latest
@@ -29,6 +33,7 @@ jobs:
 
           patch="kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
           awk '/^diff --git a\// { p=$3; sub(/^a\//, "", p); print "/" p }' "$patch"             > "$RUNNER_TEMP/kernel-sparse.txt"
+
           git -C "$RUNNER_TEMP/common" sparse-checkout init --no-cone
           xargs -a "$RUNNER_TEMP/kernel-sparse.txt"             git -C "$RUNNER_TEMP/common" sparse-checkout set --no-cone
           git -C "$RUNNER_TEMP/common" checkout -q android16-6.12
@@ -38,15 +43,17 @@ jobs:
         run: |
           set -euo pipefail
           sha="$(
-            tools/find-kernel-baseline.sh               --kernel-tree "$RUNNER_TEMP/common"               --before '2026-09-27T00:00:00Z'               --after '2026-09-15T00:00:00Z'
+            bash tools/find-kernel-baseline.sh               --kernel-tree "$RUNNER_TEMP/common"               --before '2026-09-28T00:00:00Z'               --after '2026-09-01T00:00:00Z'
           )"
+          test -n "$sha"
           echo "SUSFS_KERNEL_BASELINE=$sha" >> "$GITHUB_ENV"
+
           {
             echo "### Compatible Android kernel baseline"
             echo
-            echo "`$sha`"
+            echo "\`$sha\`"
             echo
-            git -C "$RUNNER_TEMP/common" show -s --format='- %cs %s' "$sha"
+            git -C "$RUNNER_TEMP/common" show -s --format='- %cI %s' "$sha"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Reconfirm exact patch application
@@ -55,3 +62,4 @@ jobs:
           set -euo pipefail
           git -C "$RUNNER_TEMP/common" checkout -q "$SUSFS_KERNEL_BASELINE"
           git -C "$RUNNER_TEMP/common" apply --check             "$GITHUB_WORKSPACE/kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+          echo "git apply --check: PASS" >> "$GITHUB_STEP_SUMMARY"
