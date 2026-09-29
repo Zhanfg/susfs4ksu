@@ -94,14 +94,14 @@ clone_exact "$MODULES_REPO" "$MODULES_SHA" "$MODULES_STAGE"
 
 # Overlay OnePlus/QCOM build glue and external vendor projects while preserving
 # public-manifest prebuilts that are intentionally absent from the OSS snapshot.
-rsync -a --delete-delay \
+rsync -a \
   --exclude '.git/' \
   "$MODULES_STAGE/kernel_platform/" "$WORKSPACE/"
 
 for top in vendor; do
   if [ -d "$MODULES_STAGE/$top" ]; then
     mkdir -p "$WORKSPACE/$top"
-    rsync -a --delete-delay --exclude '.git/' \
+    rsync -a --exclude '.git/' \
       "$MODULES_STAGE/$top/" "$WORKSPACE/$top/"
   fi
 done
