@@ -87,7 +87,7 @@ jobs:
           common="$RUNNER_TEMP/integration/common"
           git init "$common"
           git -C "$common" remote add origin "$KERNEL_REPO"
-          git -C "$common" fetch --depth=1 --filter=blob:none origin "$KERNEL_BASELINE_COMMIT"
+          git -C "$common" fetch --depth=1 origin "$KERNEL_BASELINE_COMMIT"
           git -C "$common" checkout --detach FETCH_HEAD
 
           resolved="$(git -C "$common" rev-parse HEAD)"
