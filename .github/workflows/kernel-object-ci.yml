@@ -67,13 +67,25 @@ jobs:
           root="$RUNNER_TEMP/object-ci"
           common="$root/common"
           ksu="$root/KernelSU"
+          archive="$RUNNER_TEMP/object-common-${KERNEL_COMMIT}.tar.gz"
+          archive_url="${KERNEL_REPO%/}/+archive/${KERNEL_COMMIT}.tar.gz"
           mkdir -p "$common" "$ksu"
 
-          git -C "$common" init -q
-          git -C "$common" remote add origin "$KERNEL_REPO"
-          git -C "$common" fetch --depth=1 origin "$KERNEL_COMMIT"
-          git -C "$common" checkout --detach FETCH_HEAD
-          test "$(git -C "$common" rev-parse HEAD)" = "$KERNEL_COMMIT"
+          if curl --retry 1 --retry-all-errors --connect-timeout 10 --max-time 120             -fL "$archive_url" -o "$archive"; then
+            tar -xzf "$archive" -C "$common"
+            git -C "$common" init -q
+            git -C "$common" config user.name "SUSFS CI"
+            git -C "$common" config user.email "ci@example.invalid"
+          else
+            rm -f "$archive"
+            rm -rf "$common"
+            mkdir -p "$common"
+            git -C "$common" init -q
+            git -C "$common" remote add origin "$KERNEL_REPO"
+            git -C "$common" fetch --depth=1 origin "$KERNEL_COMMIT"
+            git -C "$common" checkout --detach FETCH_HEAD
+            test "$(git -C "$common" rev-parse HEAD)" = "$KERNEL_COMMIT"
+          fi
 
           actual_version="$(
             awk -F= '
