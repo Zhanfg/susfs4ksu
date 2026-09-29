@@ -209,6 +209,12 @@ jobs:
           print(f"KSU_PATCH={d['patches']['kernelsu']}")
           PY
 
+      - name: Restore exact OnePlus common source archive
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/susfs/oneplus-common
+          key: oneplus13-common-${{ runner.os }}-${{ hashFiles('kernel_patches/patchset.json') }}
+
       - name: Install LLVM build dependencies
         shell: bash
         run: |
@@ -232,12 +238,23 @@ jobs:
           root="$RUNNER_TEMP/oneplus-compile"
           kernel="$root/common"
           ksu="$root/KernelSU"
-          archive="$RUNNER_TEMP/oneplus-common-${KERNEL_COMMIT}.tar.gz"
+          cache_dir="$HOME/.cache/susfs/oneplus-common"
+          archive="$cache_dir/${KERNEL_COMMIT}.tar.gz"
 
           rm -rf "$root"
-          mkdir -p "$kernel" "$ksu"
+          mkdir -p "$kernel" "$ksu" "$cache_dir"
 
-          curl --retry 3 --retry-all-errors -fL             "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/${KERNEL_COMMIT}.tar.gz"             -o "$archive"
+          if [ ! -s "$archive" ]; then
+            tmp="$archive.tmp"
+            rm -f "$tmp"
+            curl --retry 3 --retry-all-errors -fL \
+              "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/${KERNEL_COMMIT}.tar.gz" \
+              -o "$tmp"
+            tar -tzf "$tmp" >/dev/null
+            mv "$tmp" "$archive"
+          fi
+
+          tar -tzf "$archive" >/dev/null
           tar -xzf "$archive" --strip-components=1 -C "$kernel"
 
           actual="$(
