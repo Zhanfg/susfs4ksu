@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "avc_log_spoofing.h"
 
-#define CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING 0x60010
 
 struct st_susfs_avc_log_spoofing {
 	bool                    enabled;
@@ -46,7 +46,7 @@ int enable_avc_log_spoofing(int argc, char *argv[]) {
 	}
 	info.enabled = atoi(argv[2]);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING, &info);
+	susfs_control_call(CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING);
 	return info.err;
 }

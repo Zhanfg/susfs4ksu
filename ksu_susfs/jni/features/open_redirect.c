@@ -7,10 +7,10 @@
 #include <sys/reboot.h>
 #include <sys/syscall.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "open_redirect.h"
 
-#define CMD_SUSFS_ADD_OPEN_REDIRECT 0x555c0
 
 enum UID_SCHEME {
 	UID_NON_APP_PROC = 0,
@@ -95,7 +95,7 @@ int add_open_redirect(int argc, char *argv[]) {
 	strncpy(info.target_pathname, target_pathname, SUSFS_MAX_LEN_PATHNAME-1);
 	strncpy(info.redirected_pathname, redirected_pathname, SUSFS_MAX_LEN_PATHNAME-1);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ADD_OPEN_REDIRECT, &info);
+	susfs_control_call(CMD_SUSFS_ADD_OPEN_REDIRECT, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_OPEN_REDIRECT);
 	return info.err;
 }
