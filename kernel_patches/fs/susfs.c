@@ -119,7 +119,6 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
 	}
-	strscpy(new_list->info.target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
