@@ -1,0 +1,69 @@
+name: Resolve SUSFS patch baseline
+
+on:
+  push:
+    branches:
+      - "modernize/build-pipeline"
+    paths:
+      - ".github/workflows/resolve-baseline.yml"
+      - "tools/find_patch_baseline.py"
+      - "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v4
+
+      - name: Load patchset manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          from pathlib import Path
+          data = json.loads(Path("kernel_patches/patchset.json").read_text())
+          print(f"KERNEL_REPO={data['kernel']['repository']}")
+          print(f"KERNEL_TRACKING={data['kernel']['tracking_ref']}")
+          print(f"KERNEL_PATCH={data['patches']['kernel']}")
+          PY
+
+      - name: Fetch recent Android common history without blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$RUNNER_TEMP/common"
+          git init "$repo"
+          git -C "$repo" remote add origin "$KERNEL_REPO"
+          git -C "$repo" fetch             --depth=3000             --filter=blob:none             origin "$KERNEL_TRACKING"
+          git -C "$repo" checkout --detach FETCH_HEAD
+          echo "tracking_head=$(git -C "$repo" rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve exact patch-generation baseline
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(
+            python3 tools/find_patch_baseline.py               --repo "$RUNNER_TEMP/common"               --patch "$KERNEL_PATCH"               --max-commits 3000
+          )"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" >> "$GITHUB_STEP_SUMMARY"
+          commit="$(printf '%s\n' "$output" | sed -n 's/^exact_commit=//p')"
+          test -n "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify resolved commit accepts patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="$RUNNER_TEMP/common"
+          git -C "$repo" checkout --detach "${{ steps.resolve.outputs.commit }}"
+          git -C "$repo" apply --check "$KERNEL_PATCH"
+          echo "git apply --check: PASS" >> "$GITHUB_STEP_SUMMARY"
