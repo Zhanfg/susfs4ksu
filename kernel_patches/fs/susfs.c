@@ -20,6 +20,7 @@
 #include <linux/workqueue.h>
 #include <linux/fsnotify_backend.h>
 #include <linux/jump_label.h>
+#include <linux/atomic.h>
 #include <linux/security.h>
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
@@ -45,10 +46,17 @@ DEFINE_STATIC_KEY_FALSE(susfs_is_log_enabled);
 
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);
 DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
+static atomic_t susfs_sus_path_loop_refresh_pending = ATOMIC_INIT(0);
 
 bool susfs_is_sus_path_loop_active(void)
 {
 	return static_branch_unlikely(&susfs_has_sus_path_loop);
+}
+
+bool susfs_is_sus_path_loop_refresh_needed(void)
+{
+	return susfs_is_sus_path_loop_active() &&
+	       atomic_read(&susfs_sus_path_loop_refresh_pending) > 0;
 }
 
 /* sus_path */
@@ -56,6 +64,168 @@ bool susfs_is_sus_path_loop_active(void)
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
+
+struct susfs_sus_path_loop_runtime {
+	struct st_susfs_sus_path_list entry;
+	atomic_t refresh_needed;
+#ifdef CONFIG_FUSE_BPF
+	struct susfs_sus_path_loop_watch *watch;
+	dev_t backing_dev;
+	unsigned long backing_ino;
+#endif
+};
+
+#ifdef CONFIG_FUSE_BPF
+struct susfs_sus_path_loop_watch {
+	struct fsnotify_mark mark;
+	struct susfs_sus_path_loop_runtime *rule;
+	bool invalidated;
+	bool retired;
+};
+
+static struct fsnotify_group *susfs_path_loop_group;
+static DEFINE_MUTEX(susfs_path_loop_watch_lock);
+
+static void susfs_path_loop_mark_dirty(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 0, 1) == 0)
+		atomic_inc(&susfs_sus_path_loop_refresh_pending);
+}
+
+static void susfs_path_loop_mark_clean(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 1, 0) == 1)
+		atomic_dec(&susfs_sus_path_loop_refresh_pending);
+}
+
+static int susfs_handle_path_loop_backing_event(struct fsnotify_mark *mark,
+						 u32 mask, struct inode *inode,
+						 struct inode *dir,
+						 const struct qstr *file_name,
+						 u32 cookie)
+{
+	struct susfs_sus_path_loop_watch *watch =
+		container_of(mark, struct susfs_sus_path_loop_watch, mark);
+
+	if (!(mask & (FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT)))
+		return 0;
+
+	WRITE_ONCE(watch->invalidated, true);
+	if (!READ_ONCE(watch->retired) && watch->rule)
+		susfs_path_loop_mark_dirty(watch->rule);
+	return 0;
+}
+
+static void susfs_free_path_loop_mark(struct fsnotify_mark *mark)
+{
+	struct susfs_sus_path_loop_watch *watch =
+		container_of(mark, struct susfs_sus_path_loop_watch, mark);
+	struct susfs_sus_path_loop_runtime *rule = watch->rule;
+
+	if (!READ_ONCE(watch->retired) && rule) {
+		if (READ_ONCE(rule->watch) == watch)
+			WRITE_ONCE(rule->watch, NULL);
+		susfs_path_loop_mark_dirty(rule);
+	}
+	kfree(watch);
+}
+
+static const struct fsnotify_ops susfs_path_loop_fsnotify_ops = {
+	.handle_inode_event = susfs_handle_path_loop_backing_event,
+	.free_mark = susfs_free_path_loop_mark,
+};
+
+static int susfs_ensure_path_loop_group(void)
+{
+	struct fsnotify_group *group;
+
+	if (READ_ONCE(susfs_path_loop_group))
+		return 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+	group = fsnotify_alloc_group(&susfs_path_loop_fsnotify_ops, 0);
+#else
+	group = fsnotify_alloc_group(&susfs_path_loop_fsnotify_ops);
+#endif
+	if (IS_ERR(group))
+		return PTR_ERR(group);
+
+	if (cmpxchg(&susfs_path_loop_group, NULL, group) != NULL)
+		fsnotify_destroy_group(group);
+	return 0;
+}
+
+static int susfs_watch_fuse_backing(struct susfs_sus_path_loop_runtime *rule,
+				    struct inode *backing_inode)
+{
+	struct susfs_sus_path_loop_watch *watch, *old;
+	dev_t dev;
+	unsigned long ino;
+	int ret;
+
+	if (!backing_inode || !backing_inode->i_mapping)
+		return -ENOENT;
+
+	dev = backing_inode->i_sb->s_dev;
+	ino = backing_inode->i_ino;
+
+	mutex_lock(&susfs_path_loop_watch_lock);
+	ret = susfs_ensure_path_loop_group();
+	if (ret)
+		goto out_unlock;
+
+	old = rule->watch;
+	if (old && !READ_ONCE(old->invalidated) &&
+	    rule->backing_dev == dev && rule->backing_ino == ino) {
+		ret = 0;
+		goto out_unlock;
+	}
+
+	if (old) {
+		WRITE_ONCE(old->retired, true);
+		WRITE_ONCE(rule->watch, NULL);
+		fsnotify_destroy_mark(&old->mark, susfs_path_loop_group);
+		fsnotify_put_mark(&old->mark);
+	}
+
+	watch = kzalloc(sizeof(*watch), GFP_KERNEL);
+	if (!watch) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+
+	watch->rule = rule;
+	fsnotify_init_mark(&watch->mark, susfs_path_loop_group);
+	watch->mark.mask = FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT;
+	ret = fsnotify_add_inode_mark(&watch->mark, backing_inode, 0);
+	if (ret) {
+		fsnotify_put_mark(&watch->mark);
+		goto out_unlock;
+	}
+
+	rule->backing_dev = dev;
+	rule->backing_ino = ino;
+	WRITE_ONCE(rule->watch, watch);
+	ret = 0;
+
+out_unlock:
+	mutex_unlock(&susfs_path_loop_watch_lock);
+	return ret;
+}
+#else
+static void susfs_path_loop_mark_dirty(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 0, 1) == 0)
+		atomic_inc(&susfs_sus_path_loop_refresh_pending);
+}
+
+static void susfs_path_loop_mark_clean(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 1, 0) == 1)
+		atomic_dec(&susfs_sus_path_loop_refresh_pending);
+}
+#endif
+
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
 static inline bool susfs_mapping_is_sus_path(const struct address_space *mapping)
@@ -149,6 +319,7 @@ out_copy_to_user:
 }
 
 void susfs_add_sus_path_loop(void __user **user_info) {
+	struct susfs_sus_path_loop_runtime *new_rule = NULL;
 	struct st_susfs_sus_path_list *new_list = NULL;
 	struct st_susfs_sus_path_list *cursor = NULL;
 	struct st_susfs_sus_path info = {0};
@@ -164,18 +335,20 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	new_list = kzalloc(sizeof(struct st_susfs_sus_path_list), GFP_KERNEL);
-	if (!new_list) {
+	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL);
+	if (!new_rule) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
 	}
+	new_list = &new_rule->entry;
+	atomic_set(&new_rule->refresh_needed, 1);
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
 	list_for_each_entry(cursor, &LH_SUS_PATH_LOOP, list) {
 		if (!strcmp(cursor->target_pathname, new_list->target_pathname)) {
 			mutex_unlock(&susfs_mutex_lock_sus_path);
-			kfree(new_list);
+			kfree(new_rule);
 			SUSFS_LOGI("target_pathname '%s' is already in LH_SUS_PATH_LOOP\n",
 					info.target_pathname);
 			info.err = 0;
@@ -183,6 +356,7 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		}
 	}
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
+	atomic_inc(&susfs_sus_path_loop_refresh_pending);
 	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
 		static_branch_enable(&susfs_has_sus_path_rules);
 	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
@@ -199,9 +373,10 @@ out_copy_to_user:
 
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
+	struct susfs_sus_path_loop_runtime *rule;
 	struct path path;
 
-	if (!susfs_is_sus_path_loop_active())
+	if (!susfs_is_sus_path_loop_refresh_needed())
 		return;
 	struct inode *inode;
 	struct fuse_inode *fi = NULL;
@@ -209,6 +384,9 @@ static void susfs_run_sus_path_loop(void) {
 	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
 
 	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
+		rule = container_of(cursor, struct susfs_sus_path_loop_runtime, entry);
+		if (!atomic_read(&rule->refresh_needed))
+			continue;
 		if (!kern_path(cursor->target_pathname, 0, &path))
 		{
 			inode = d_backing_inode(path.dentry);
@@ -225,6 +403,11 @@ static void susfs_run_sus_path_loop(void) {
 					continue;
 				}
 				susfs_mark_fuse_sus_path(fi);
+#ifdef CONFIG_FUSE_BPF
+				if (fi->backing_inode &&
+				    !susfs_watch_fuse_backing(rule, fi->backing_inode))
+					susfs_path_loop_mark_clean(rule);
+#endif
 				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', fi->inode.i_ino: '%lu', fi->inode.i_mapping->flags: 0x%lx\n",
 						cursor->target_pathname, fi->inode.i_ino, fi->inode.i_mapping->flags);
 			} else {
