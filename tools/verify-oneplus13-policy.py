@@ -115,9 +115,24 @@ def main() -> int:
         "fsnotify mark lifetime finalizer",
     )
     require(
+        core,
+        "bool susfs_is_sus_path_loop_refresh_needed(void)",
+        "event-driven dynamic-path refresh state",
+    )
+    require(
+        core,
+        "FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT",
+        "FUSE backing invalidation watch",
+    )
+    require(
+        core,
+        "atomic_read(&susfs_sus_path_loop_refresh_pending) > 0",
+        "dirty-rule refresh counter",
+    )
+    require(
         ksu_effective,
-        "!susfs_is_sus_path_loop_active() || work_pending(&susfs_extra_works)",
-        "empty dynamic-path workqueue suppression",
+        "!susfs_is_sus_path_loop_refresh_needed() || work_pending(&susfs_extra_works)",
+        "event-driven dynamic-path workqueue suppression",
     )
 
     forbid(
