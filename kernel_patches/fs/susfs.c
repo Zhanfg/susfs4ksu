@@ -20,6 +20,7 @@
 #include <linux/workqueue.h>
 #include <linux/fsnotify_backend.h>
 #include <linux/jump_label.h>
+#include <linux/atomic.h>
 #include <linux/security.h>
 #include <linux/susfs.h>
 #include "fuse/fuse_i.h"
@@ -32,20 +33,234 @@ extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
 extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt);
 
 #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
-DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
-#define SUSFS_LOGI(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
-#define SUSFS_LOGE(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
+/* Production default: retain runtime diagnostics without paying printk cost
+ * on VFS hot paths unless explicitly enabled by the controller.
+ */
+DEFINE_STATIC_KEY_FALSE(susfs_is_log_enabled);
+#define SUSFS_LOGI(fmt, ...) if (static_branch_unlikely(&susfs_is_log_enabled)) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
+#define SUSFS_LOGE(fmt, ...) if (static_branch_unlikely(&susfs_is_log_enabled)) pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
 #else
 #define SUSFS_LOGI(fmt, ...) 
 #define SUSFS_LOGE(fmt, ...) 
 #endif
+
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_rules);
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_path_loop);
+static atomic_t susfs_sus_path_loop_refresh_pending = ATOMIC_INIT(0);
+
+bool susfs_is_sus_path_loop_active(void)
+{
+	return static_branch_unlikely(&susfs_has_sus_path_loop);
+}
+
+bool susfs_is_sus_path_loop_refresh_needed(void)
+{
+	return susfs_is_sus_path_loop_active() &&
+	       atomic_read(&susfs_sus_path_loop_refresh_pending) > 0;
+}
 
 /* sus_path */
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
+
+struct susfs_sus_path_loop_runtime {
+	struct st_susfs_sus_path_list entry;
+	atomic_t refresh_needed;
+#ifdef CONFIG_FUSE_BPF
+	struct susfs_sus_path_loop_watch *watch;
+	dev_t backing_dev;
+	unsigned long backing_ino;
+#endif
+};
+
+#ifdef CONFIG_FUSE_BPF
+struct susfs_sus_path_loop_watch {
+	struct fsnotify_mark mark;
+	struct susfs_sus_path_loop_runtime *rule;
+	bool invalidated;
+	bool retired;
+};
+
+static struct fsnotify_group *susfs_path_loop_group;
+static DEFINE_MUTEX(susfs_path_loop_watch_lock);
+
+static void susfs_path_loop_mark_dirty(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 0, 1) == 0)
+		atomic_inc(&susfs_sus_path_loop_refresh_pending);
+}
+
+static void susfs_path_loop_mark_clean(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 1, 0) == 1)
+		atomic_dec(&susfs_sus_path_loop_refresh_pending);
+}
+
+static int susfs_handle_path_loop_backing_event(struct fsnotify_mark *mark,
+						 u32 mask, struct inode *inode,
+						 struct inode *dir,
+						 const struct qstr *file_name,
+						 u32 cookie)
+{
+	struct susfs_sus_path_loop_watch *watch =
+		container_of(mark, struct susfs_sus_path_loop_watch, mark);
+
+	if (!(mask & (FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT)))
+		return 0;
+
+	WRITE_ONCE(watch->invalidated, true);
+	if (!READ_ONCE(watch->retired) && watch->rule)
+		susfs_path_loop_mark_dirty(watch->rule);
+	return 0;
+}
+
+static void susfs_free_path_loop_mark(struct fsnotify_mark *mark)
+{
+	struct susfs_sus_path_loop_watch *watch =
+		container_of(mark, struct susfs_sus_path_loop_watch, mark);
+	struct susfs_sus_path_loop_runtime *rule = watch->rule;
+
+	if (!READ_ONCE(watch->retired) && rule) {
+		if (READ_ONCE(rule->watch) == watch)
+			WRITE_ONCE(rule->watch, NULL);
+		susfs_path_loop_mark_dirty(rule);
+	}
+	kfree(watch);
+}
+
+static const struct fsnotify_ops susfs_path_loop_fsnotify_ops = {
+	.handle_inode_event = susfs_handle_path_loop_backing_event,
+	.free_mark = susfs_free_path_loop_mark,
+};
+
+static int susfs_ensure_path_loop_group(void)
+{
+	struct fsnotify_group *group;
+
+	if (READ_ONCE(susfs_path_loop_group))
+		return 0;
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+	group = fsnotify_alloc_group(&susfs_path_loop_fsnotify_ops, 0);
+#else
+	group = fsnotify_alloc_group(&susfs_path_loop_fsnotify_ops);
+#endif
+	if (IS_ERR(group))
+		return PTR_ERR(group);
+
+	if (cmpxchg(&susfs_path_loop_group, NULL, group) != NULL)
+		fsnotify_destroy_group(group);
+	return 0;
+}
+
+static int susfs_watch_fuse_backing(struct susfs_sus_path_loop_runtime *rule,
+				    struct inode *backing_inode)
+{
+	struct susfs_sus_path_loop_watch *watch, *old;
+	dev_t dev;
+	unsigned long ino;
+	int ret;
+
+	if (!backing_inode || !backing_inode->i_mapping)
+		return -ENOENT;
+
+	dev = backing_inode->i_sb->s_dev;
+	ino = backing_inode->i_ino;
+
+	mutex_lock(&susfs_path_loop_watch_lock);
+	ret = susfs_ensure_path_loop_group();
+	if (ret)
+		goto out_unlock;
+
+	old = rule->watch;
+	if (old && !READ_ONCE(old->invalidated) &&
+	    rule->backing_dev == dev && rule->backing_ino == ino) {
+		ret = 0;
+		goto out_unlock;
+	}
+
+	if (old) {
+		WRITE_ONCE(old->retired, true);
+		WRITE_ONCE(rule->watch, NULL);
+		fsnotify_destroy_mark(&old->mark, susfs_path_loop_group);
+		fsnotify_put_mark(&old->mark);
+	}
+
+	watch = kzalloc(sizeof(*watch), GFP_KERNEL);
+	if (!watch) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+
+	watch->rule = rule;
+	fsnotify_init_mark(&watch->mark, susfs_path_loop_group);
+	watch->mark.mask = FS_DELETE_SELF | FS_MOVE_SELF | FS_UNMOUNT;
+	ret = fsnotify_add_inode_mark(&watch->mark, backing_inode, 0);
+	if (ret) {
+		fsnotify_put_mark(&watch->mark);
+		goto out_unlock;
+	}
+
+	rule->backing_dev = dev;
+	rule->backing_ino = ino;
+	WRITE_ONCE(rule->watch, watch);
+	ret = 0;
+
+out_unlock:
+	mutex_unlock(&susfs_path_loop_watch_lock);
+	return ret;
+}
+#else
+static void susfs_path_loop_mark_dirty(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 0, 1) == 0)
+		atomic_inc(&susfs_sus_path_loop_refresh_pending);
+}
+
+static void susfs_path_loop_mark_clean(struct susfs_sus_path_loop_runtime *rule)
+{
+	if (atomic_cmpxchg(&rule->refresh_needed, 1, 0) == 1)
+		atomic_dec(&susfs_sus_path_loop_refresh_pending);
+}
+#endif
+
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
+
+static inline bool susfs_mapping_is_sus_path(const struct address_space *mapping)
+{
+	return mapping && test_bit(AS_FLAGS_SUS_PATH, &mapping->flags);
+}
+
+static inline bool susfs_is_fuse_sus_path_marked(struct fuse_inode *fi)
+{
+	if (susfs_mapping_is_sus_path(fi->inode.i_mapping))
+		return true;
+#ifdef CONFIG_FUSE_BPF
+	/*
+	 * Dynamic FUSE paths on OnePlus 13 can get a fresh surface inode while
+	 * retaining the same backing inode. Reuse the persistent backing mark
+	 * only when sus_path_loop is active, so ordinary FUSE lookups keep the
+	 * original single-mapping fast path.
+	 */
+	if (susfs_is_sus_path_loop_active() && fi->backing_inode &&
+	    susfs_mapping_is_sus_path(fi->backing_inode->i_mapping))
+		return true;
+#endif
+	return false;
+}
+
+static inline void susfs_mark_fuse_sus_path(struct fuse_inode *fi)
+{
+	if (!susfs_mapping_is_sus_path(fi->inode.i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
+#ifdef CONFIG_FUSE_BPF
+	if (fi->backing_inode && fi->backing_inode->i_mapping &&
+	    !susfs_mapping_is_sus_path(fi->backing_inode->i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &fi->backing_inode->i_mapping->flags);
+#endif
+}
 
 void susfs_add_sus_path(void __user **user_info) {
 	struct st_susfs_sus_path info = {0};
@@ -78,15 +293,19 @@ void susfs_add_sus_path(void __user **user_info) {
 			info.err = -ENOENT;
 			goto out_path_put_path;
 		}
-		set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
-		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+		susfs_mark_fuse_sus_path(fi);
 		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n", 
 					info.target_pathname, fi->nodeid, fi->inode.i_ino, fi->inode.i_mapping->flags);
+		if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+			static_branch_enable(&susfs_has_sus_path_rules);
 		info.err = 0;
 		goto out_path_put_path;
 	}
 
-	set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+	if (!susfs_mapping_is_sus_path(inode->i_mapping))
+		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		static_branch_enable(&susfs_has_sus_path_rules);
 	SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
 				info.target_pathname, inode->i_ino, inode->i_mapping->flags);
 	info.err = 0;
@@ -100,7 +319,9 @@ out_copy_to_user:
 }
 
 void susfs_add_sus_path_loop(void __user **user_info) {
+	struct susfs_sus_path_loop_runtime *new_rule = NULL;
 	struct st_susfs_sus_path_list *new_list = NULL;
+	struct st_susfs_sus_path_list *cursor = NULL;
 	struct st_susfs_sus_path info = {0};
 
 	if (copy_from_user(&info, (struct st_susfs_sus_path __user*)*user_info, sizeof(info))) {
@@ -114,16 +335,32 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
-	new_list = kzalloc(sizeof(struct st_susfs_sus_path_list), GFP_KERNEL);
-	if (!new_list) {
+	new_rule = kzalloc(sizeof(*new_rule), GFP_KERNEL);
+	if (!new_rule) {
 		info.err = -ENOMEM;
 		goto out_copy_to_user;
 	}
-	strscpy(new_list->info.target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+	new_list = &new_rule->entry;
+	atomic_set(&new_rule->refresh_needed, 1);
 	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
+	list_for_each_entry(cursor, &LH_SUS_PATH_LOOP, list) {
+		if (!strcmp(cursor->target_pathname, new_list->target_pathname)) {
+			mutex_unlock(&susfs_mutex_lock_sus_path);
+			kfree(new_rule);
+			SUSFS_LOGI("target_pathname '%s' is already in LH_SUS_PATH_LOOP\n",
+					info.target_pathname);
+			info.err = 0;
+			goto out_copy_to_user;
+		}
+	}
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
+	atomic_inc(&susfs_sus_path_loop_refresh_pending);
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		static_branch_enable(&susfs_has_sus_path_rules);
+	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
+		static_branch_enable(&susfs_has_sus_path_loop);
 	mutex_unlock(&susfs_mutex_lock_sus_path);
 	SUSFS_LOGI("target_pathname: '%s', is successfully added to LH_SUS_PATH_LOOP\n", new_list->target_pathname);
 	info.err = 0;
@@ -136,13 +373,20 @@ out_copy_to_user:
 
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
+	struct susfs_sus_path_loop_runtime *rule;
 	struct path path;
+
+	if (!susfs_is_sus_path_loop_refresh_needed())
+		return;
 	struct inode *inode;
 	struct fuse_inode *fi = NULL;
 	const struct cred *saved = override_creds(ksu_cred);
 	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
 
 	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
+		rule = container_of(cursor, struct susfs_sus_path_loop_runtime, entry);
+		if (!atomic_read(&rule->refresh_needed))
+			continue;
 		if (!kern_path(cursor->target_pathname, 0, &path))
 		{
 			inode = d_backing_inode(path.dentry);
@@ -158,12 +402,17 @@ static void susfs_run_sus_path_loop(void) {
 					path_put(&path);
 					continue;
 				}
-				set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
-				set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+				susfs_mark_fuse_sus_path(fi);
+#ifdef CONFIG_FUSE_BPF
+				if (fi->backing_inode &&
+				    !susfs_watch_fuse_backing(rule, fi->backing_inode))
+					susfs_path_loop_mark_clean(rule);
+#endif
 				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', fi->inode.i_ino: '%lu', fi->inode.i_mapping->flags: 0x%lx\n",
 						cursor->target_pathname, fi->inode.i_ino, fi->inode.i_mapping->flags);
 			} else {
-				set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+				if (!susfs_mapping_is_sus_path(inode->i_mapping))
+					set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
 				SUSFS_LOGI("re-flag AS_FLAGS_SUS_PATH on path '%s', inode->i_ino: '%lu', inode->i_mapping->flags: 0x%lx\n",
 						cursor->target_pathname, inode->i_ino, inode->i_mapping->flags);
 			}
@@ -188,6 +437,9 @@ bool susfs_is_inode_sus_path(struct inode *inode)
 #endif
 {
 	struct fuse_inode *fi = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_path_rules))
+		return false;
 	if (!susfs_is_current_proc_umounted_app()) {
 		return false;
 	}
@@ -202,13 +454,13 @@ bool susfs_is_inode_sus_path(struct inode *inode)
 			return false;
 		}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(i_uid_into_vfsuid(idmap, &fi->inode).val)))
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 0)
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(i_uid_into_mnt(i_user_ns(&fi->inode), &fi->inode).val)))
 #else
-		if (unlikely(test_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags) &&
+		if (unlikely(susfs_is_fuse_sus_path_marked(fi) &&
 			is_i_uid_not_allowed(fi->inode.i_uid.val)))
 #endif
 		{
@@ -272,7 +524,9 @@ out_copy_to_user:
 /* sus_kstat */
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 static DEFINE_MUTEX(susfs_mutex_lock_sus_kstat);
-static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, 14);
+DEFINE_STATIC_KEY_FALSE(susfs_has_sus_kstat_rules);
+#define SUSFS_KSTAT_HASH_BITS 10
+static DEFINE_HASHTABLE(SUS_KSTAT_HLIST, SUSFS_KSTAT_HASH_BITS);
 
 extern int calculate_f_flags_wrapper(struct vfsmount *mnt);
 extern int statfs_by_dentry_wrapper(struct dentry *dentry, struct kstatfs *buf);
@@ -412,6 +666,8 @@ void susfs_add_sus_kstat(void __user **user_info) {
 #endif
 			hash_del_rcu(&tmp_entry->node);
 			hash_add_rcu(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
+			if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+				static_branch_enable(&susfs_has_sus_kstat_rules);
 			mutex_unlock(&susfs_mutex_lock_sus_kstat);
 			synchronize_rcu();
 			kfree(tmp_entry);
@@ -450,6 +706,8 @@ void susfs_add_sus_kstat(void __user **user_info) {
 			new_entry->info.spoofed_blksize, new_entry->info.spoofed_blocks, new_entry->spoofed_mnt_id);
 #endif
 	hash_add_rcu(SUS_KSTAT_HLIST, &new_entry->node, info.target_ino);
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		static_branch_enable(&susfs_has_sus_kstat_rules);
 	mutex_unlock(&susfs_mutex_lock_sus_kstat);
 	info.err = 0;
 out_copy_to_user:
@@ -520,6 +778,8 @@ out_copy_to_user:
 __attribute__((hot)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse) {
 	struct fuse_inode *fi = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return false;
 	if (!inode)
 		return false;
 	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
@@ -546,6 +806,9 @@ __attribute__((hot)) bool susfs_is_inode_sus_kstat(struct inode *inode, bool *ou
 void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask)
 {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 	struct fuse_inode *fi = NULL;
 	unsigned long target_ino = 0;
 	dev_t target_dev = 0;
@@ -610,6 +873,9 @@ out_spoof_kstat:
 
 void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, unsigned long *out_ino) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 	struct fuse_inode *fi = NULL;
 	unsigned long target_ino = 0;
 	dev_t target_dev = 0;
@@ -653,6 +919,9 @@ out_spoof_kstat:
 
 int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return -ENOENT;
 	struct inode *target_inode = inode;
 
 	if (*is_fuse)
@@ -675,6 +944,9 @@ int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, b
 void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *out_target_dev) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
+
 	rcu_read_lock();
 	hash_for_each_possible_rcu(SUS_KSTAT_HLIST, entry, node, *out_target_ino) {
 		if (entry->target_dev == *out_target_dev)
@@ -691,6 +963,9 @@ void susfs_sus_kstat_spoof_inotify_fdinfo(unsigned long *out_target_ino, dev_t *
 
 void susfs_sus_kstat_spoof_proc_fd_seq_show(int *out_target_mnt_id, unsigned long *out_target_ino, dev_t target_dev) {
 	struct st_susfs_sus_kstat_hlist *entry = NULL;
+
+	if (!static_branch_unlikely(&susfs_has_sus_kstat_rules))
+		return;
 
 	rcu_read_lock();
 	hash_for_each_possible_rcu(SUS_KSTAT_HLIST, entry, node, *out_target_ino) {
@@ -869,7 +1144,9 @@ void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m) {
 /* open_redirect */
 #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
-static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
+DEFINE_STATIC_KEY_FALSE(susfs_has_open_redirect_rules);
+#define SUSFS_OPEN_REDIRECT_HASH_BITS 10
+static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, SUSFS_OPEN_REDIRECT_HASH_BITS);
 DEFINE_SRCU(susfs_srcu_open_redirect);
 
 void susfs_add_open_redirect(void __user **user_info) {
@@ -997,6 +1274,8 @@ void susfs_add_open_redirect(void __user **user_info) {
 			new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
 		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node, new_entry_target->target_ino);
 		hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node, new_entry_redirected->target_ino);
+		if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+			static_branch_enable(&susfs_has_open_redirect_rules);
 		// we need to mark both target and redirected path inode just for spoofing readlink as well
 		set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 		set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
@@ -1015,6 +1294,8 @@ void susfs_add_open_redirect(void __user **user_info) {
 			new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
 	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node, new_entry_target->target_ino);
 	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node, new_entry_redirected->target_ino);
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		static_branch_enable(&susfs_has_open_redirect_rules);
 	// we need to mark both target and redirected path inode just for spoofing readlink as well
 	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
@@ -1035,7 +1316,11 @@ out_copy_to_user:
 struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
 	struct filename *new_filename = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return NULL;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (!entry->reversed_lookup_only &&
@@ -1079,7 +1364,11 @@ out_srcu_read_unlock:
 
 int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buffer, int buflen) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -ENOENT;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (entry->reversed_lookup_only &&
@@ -1107,7 +1396,11 @@ int susfs_open_redirect_spoof_vfs_readlink(struct inode *inode, char __user *buf
 
 int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode, char *tmp_buf, int buflen) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
-	int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
+	int srcu_idx;
+
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -ENOENT;
+	srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);
 
 	hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {
 		if (entry->reversed_lookup_only &&
@@ -1133,6 +1426,8 @@ int susfs_open_redirect_spoof_do_proc_readlink(struct inode *inode, char *tmp_bu
 int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char **out_spoofed_name) {
 	struct st_susfs_open_redirect_hlist *entry = NULL;
 
+	if (!static_branch_unlikely(&susfs_has_open_redirect_rules))
+		return -EINVAL;
 	if (!out_spoofed_name || *out_spoofed_name != NULL) {
 		SUSFS_LOGE("out_spoofed_name cannot be NULL and *out_spoofed_name has to be NULL\n");
 		return -EINVAL;
@@ -1156,10 +1451,28 @@ int susfs_open_redirect_spoof_show_map_vma_srcu(struct inode *inode, unsigned lo
 
 /* sus_map */
 #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+static inline void susfs_mark_fuse_sus_map(struct fuse_inode *fi)
+{
+	if (fi->inode.i_mapping &&
+	    !test_bit(AS_FLAGS_SUS_MAP, &fi->inode.i_mapping->flags))
+		set_bit(AS_FLAGS_SUS_MAP, &fi->inode.i_mapping->flags);
+#ifdef CONFIG_FUSE_BPF
+	/*
+	 * OnePlus 13's FUSE-BPF mmap path replaces vma->vm_file with the
+	 * backing file. Propagate SUS_MAP to the backing mapping so /proc/maps,
+	 * smaps, pagemap and remote-vm checks still observe the hidden mark.
+	 */
+	if (fi->backing_inode && fi->backing_inode->i_mapping &&
+	    !test_bit(AS_FLAGS_SUS_MAP, &fi->backing_inode->i_mapping->flags))
+		set_bit(AS_FLAGS_SUS_MAP, &fi->backing_inode->i_mapping->flags);
+#endif
+}
+
 void susfs_add_sus_map(void __user **user_info) {
 	struct st_susfs_sus_map info = {0};
 	struct path path;
 	struct inode *inode = NULL;
+	struct fuse_inode *fi = NULL;
 
 	if (copy_from_user(&info, (struct st_susfs_sus_map __user*)*user_info, sizeof(info))) {
 		info.err = -EFAULT;
@@ -1178,7 +1491,17 @@ void susfs_add_sus_map(void __user **user_info) {
 		info.err = -ENOENT;
 		goto out_path_put_path;
 	}
-	set_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags);
+	if (inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
+		fi = get_fuse_inode(inode);
+		if (!fi || !fi->inode.i_mapping) {
+			SUSFS_LOGE("fi || fi->inode.i_mapping is NULL\n");
+			info.err = -ENOENT;
+			goto out_path_put_path;
+		}
+		susfs_mark_fuse_sus_map(fi);
+	} else if (!test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags)) {
+		set_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags);
+	}
 	SUSFS_LOGI("pathname: '%s', is flagged as AS_FLAGS_SUS_MAP\n", info.target_pathname);
 	info.err = 0;
 out_path_put_path:
@@ -1443,8 +1766,14 @@ static int susfs_handle_sdcard_inode_event(struct fsnotify_mark *mark, u32 mask,
 	return 0;
 }
 
+static void susfs_free_fsnotify_mark(struct fsnotify_mark *mark)
+{
+	kfree(mark);
+}
+
 static const struct fsnotify_ops fsnotify_ops = {
 	.handle_inode_event = susfs_handle_sdcard_inode_event,
+	.free_mark = susfs_free_fsnotify_mark,
 };
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,

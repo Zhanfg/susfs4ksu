@@ -22,6 +22,9 @@
 #define getname_safe(name) (name == NULL ? ERR_PTR(-EINVAL) : getname(name))
 #define putname_safe(name) (IS_ERR(name) ? NULL : putname(name))
 
+bool susfs_is_sus_path_loop_active(void);
+bool susfs_is_sus_path_loop_refresh_needed(void);
+
 /********/
 /* ENUM */
 /********/
@@ -45,7 +48,6 @@ struct st_susfs_sus_path {
 
 struct st_susfs_sus_path_list {
 	struct list_head                        list;
-	struct st_susfs_sus_path                info;
 	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
 };
 #endif
