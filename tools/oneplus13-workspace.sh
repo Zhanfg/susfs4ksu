@@ -109,6 +109,53 @@ done
 clone_exact "$COMMON_REPO" "$COMMON_SHA" "$WORKSPACE/common"
 clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 
+# OnePlus' msm-kernel repository intentionally contains symlinks such as:
+#   kernel/oplus_cpu -> ../../../vendor/oplus/kernel/cpu
+# In an Android source checkout those resolve outside kernel_platform, into
+# ANDROID_BUILD_TOP/vendor. A standalone public Kleaf workspace has no such
+# parent tree and Bazel sandboxes would preserve them as dangling links.
+#
+# Materialize only the exact external targets referenced by the pinned vendor
+# kernel. Resolve each link against the original modules+DT Android-top layout;
+# internal msm-kernel links are left untouched. This keeps the workspace
+# self-contained without copying the complete vendor tree.
+materialize_external_vendor_links() {
+  local kernel_root="$WORKSPACE/msm-kernel"
+  local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
+  local link rel target source
+
+  while IFS= read -r -d '' link; do
+    rel="${link#"$kernel_root"/}"
+    target="$(readlink "$link")"
+
+    # Resolve the link as it exists in the official Android source layout.
+    source="$(realpath -m "$original_kernel_root/$(dirname "$rel")/$target")"
+
+    case "$source" in
+      "$MODULES_STAGE"/vendor/*)
+        [ -e "$source" ] || {
+          echo "missing official symlink target for $rel: $source" >&2
+          return 1
+        }
+        rm -f "$link"
+        if [ -d "$source" ]; then
+          mkdir -p "$link"
+          rsync -a --exclude '.git/' "$source/" "$link/"
+        else
+          mkdir -p "$(dirname "$link")"
+          cp -a "$source" "$link"
+        fi
+        ;;
+    esac
+  done < <(find "$kernel_root" -type l -print0)
+}
+
+materialize_external_vendor_links
+
+# The first hard dependency exposed by sun_perf Kconfig and several WALT
+# includes must now be a real in-tree directory, not an external symlink.
+test -f "$WORKSPACE/msm-kernel/kernel/oplus_cpu/Kconfig"
+
 # Match OnePlus build_with_bazel.py / prepare_vendor.sh glue. Qualcomm's
 # msm-kernel rules intentionally load these extensions through //build.
 mkdir -p "$WORKSPACE/build"
