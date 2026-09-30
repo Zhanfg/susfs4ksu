@@ -23,6 +23,7 @@
 #define putname_safe(name) (IS_ERR(name) ? NULL : putname(name))
 
 bool susfs_is_sus_path_loop_active(void);
+bool susfs_is_sus_path_loop_refresh_needed(void);
 
 /********/
 /* ENUM */
