@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          packages=(bc bison flex libssl-dev libelf-dev clang lld llvm)
+          packages=(bc bison flex libssl-dev libelf-dev libdw-dev clang lld llvm)
           missing=()
           for package in "${packages[@]}"; do
             if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q 'ok installed'; then

@@ -109,10 +109,20 @@ checks. These host tests exercise the actual shell scripts.
   enabled and disabled. This uses the existing OnePlus 6.6 kernel glue and the
   new shared core; disabled features exposed an unused-counter build failure,
   now corrected without changing warning policy.
+- Direct patch application and all 40 patch-touched C objects compiled on
+  Android 6.12.58, with optional SUSFS features both enabled and disabled.
+  The source was fetched from OnePlusOSS's
+  `android_kernel_common_oneplus_sm8850` GitHub mirror at
+  `67fe3c9df146f5752b3cd5c69c8e0460221a8018`, matching the manifest's exact
+  Android baseline commit. Targets were derived from the kernel and KernelSU
+  patch paths using the same selection as `kernel-object-ci.yml`, plus
+  `fs/susfs.o`. Both kernel lanes used the ARM64 NDK r27c LLVM toolchain;
+  these local object checks disabled BTF and LTO and retained compiler warning
+  policy. Android 6.12's enabled `GENDWARFKSYMS` also requires `libdw-dev`,
+  now included in both kernel CI dependency lists.
 
-The fixed Android 6.12 source endpoint was inaccessible in this environment,
-so its kernel compilation is unverified here. Complete ReSukiSU kernel builds,
-full Image/KMI validation and Android device runtime tests remain outstanding.
+Complete ReSukiSU kernel builds, full Image/KMI validation (including BTF/LTO)
+and Android device runtime tests remain outstanding.
 CI includes the new regression gates; local checks do not establish remote CI
 results or device performance improvements.
 
