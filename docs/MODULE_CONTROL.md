@@ -14,12 +14,19 @@ new control module is deliberately small and event/stage driven.
 
 ## Backend selection
 
-1. If `ksud susfs show version` succeeds, use the manager-native
-   `ksud susfs` interface. This matches current ReSukiSU.
+1. If `ksud susfs show version` returns a valid version and `show variant`
+   returns `GKI` or `NON-GKI`, use the manager-native `ksud susfs` interface.
+   This matches current ReSukiSU. Empty, malformed and `Unsupported` replies
+   are rejected even when the command exits successfully.
 2. Otherwise use the bundled `ksu_susfs susfs ...` control binary.
 
 The command namespace is intentionally compatible with ReSukiSU's SUSFS CLI for
 shared operations.
+
+The fallback lives in the module's `bin/ksu_susfs`. ReSukiSU may own a hard link
+from `/data/adb/ksu/bin/ksu_susfs` to its `ksud` daemon. The module therefore
+installs and removes only its private helper. Status reuses the verified version
+and variant, and propagates a failed feature query instead of hiding it.
 
 ## Configuration
 

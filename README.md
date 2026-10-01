@@ -34,12 +34,12 @@
 15. For other building tips, please refer to the section **[Other Building Tips]** below.
 
 ## Build ksu_susfs userspace tool ##
-1. Run `./build_ksu_susfs_tool.sh` to build the userspace tool `ksu_susfs`, and the arm64 and arm binary will be copied to `ksu_module_susfs/tools/` as well.
-2. Now you can also push the compiled `ksu_susfs` tool to `/data/adb/ksu/bin/` so that you can run it directly in adb root shell or termux root shell, as well as in your own ksu modules.
+1. Run `./build_all.sh` with `ANDROID_NDK_HOME` set to NDK r27c. The ARM64 tool and module ZIP are written to `.build/dist`; tracked sources are preserved.
+2. The helper targets Android API 21, the minimum ARM64 Android platform. The module installs its fallback at `bin/ksu_susfs` inside its own directory and prefers the manager's `ksud susfs` interface. ReSukiSU's manager-owned `ksu_susfs` hard link stays under manager control.
 
 ## Build susfs4ksu module ##
-- The ksu module here is just a demo to show how to use it.
-- It will also copy the `ksu_susfs` tool to `/data/adb/ksu/bin/` as well when installing the module.
+- The module uses a small controller and an inert default profile; configure `config/default.conf` to enable rules.
+- The bundled fallback stays in the module's private binary directory.
 
 1. ksu_susfs tool can be run in any stage scripts, post-fs-data.sh, services.sh, boot-completed.sh according to your own need.
 2. Run `./build_ksu_module.sh` to build the susfs KSU module.

@@ -76,6 +76,46 @@ allocation/copy failures and pathname boundaries. Kernel SRCU and VFS behavior
 still require kernel/device tests. Any future removal API must unlink both
 containers and wait for SRCU readers before freeing a rule.
 
+## Manager coexistence and discovery
+
+The module verifies version syntax and the kernel variant before selecting
+`ksud susfs`, then uses its private helper as fallback. An exit status of zero
+with an empty or `Unsupported` reply is insufficient. Verified version and
+variant are reused in status; feature-query failures are returned to callers.
+Unrecognized major versions do not advertise the v2 compatibility profile.
+
+ReSukiSU's audited `assets.rs` creates a hard link between its `ksu_susfs`
+alias and `ksud`. Copying a helper onto that alias would overwrite the daemon's
+inode. Installation now replaces only a module-private helper atomically, and
+uninstallation leaves manager aliases to the manager. The helper targets API 21
+instead of the NDK's latest platform so newer build tools do not raise its
+Android minimum implicitly.
+
+Run `python3 tools/test-module-controller.py` for discovery, fallback, stage
+idempotency, failed-query propagation and hard-link-preserving installation
+checks. These host tests exercise the actual shell scripts.
+
+## Validation of the first implementation batch
+
+- Nine native discovery reply scenarios and ARM32/ARM64 wire-layout compilation.
+- Six dispatcher/port configurations, each checking 16 commands and two
+  unknown/deprecated commands, including legacy ReSukiSU behavior.
+- Dynamic registration collision, concurrent writer and error-path tests.
+- Eight controller/installer tests, including a real filesystem hard-link fixture.
+- ARM64 API-21 NDK build, module archive integrity and patchctl transactions.
+- Direct patch application and `fs/susfs.o` plus official KernelSU dispatcher
+  compilation on the fixed OnePlus 6.6.118 common kernel
+  `e1b346b6b4f4096eb342ae3684838a942fd6f6c4`, with optional SUSFS features both
+  enabled and disabled. This uses the existing OnePlus 6.6 kernel glue and the
+  new shared core; disabled features exposed an unused-counter build failure,
+  now corrected without changing warning policy.
+
+The fixed Android 6.12 source endpoint was inaccessible in this environment,
+so its kernel compilation is unverified here. Complete ReSukiSU kernel builds,
+full Image/KMI validation and Android device runtime tests remain outstanding.
+CI includes the new regression gates; local checks do not establish remote CI
+results or device performance improvements.
+
 ## Further work
 
 - Define invalidation and removal lifetimes before adding a path lookup cache.

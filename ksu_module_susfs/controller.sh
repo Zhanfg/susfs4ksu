@@ -4,13 +4,40 @@ PATH=/data/adb/ksu/bin:/system/bin:/system/xbin:$PATH
 MODDIR=${0%/*}
 CONFIG_FILE="${SUSFS_CONFIG:-${MODDIR}/config/default.conf}"
 RUNTIME_DIR="${SUSFS_RUNTIME_DIR:-/dev/.susfs4ksu}"
-SUSFS_BIN="${SUSFS_BIN:-/data/adb/ksu/bin/ksu_susfs}"
+SUSFS_BIN="${SUSFS_BIN:-${MODDIR}/bin/ksu_susfs}"
 
 CONTROL_BACKEND=
+CONTROL_VERSION=
+CONTROL_VARIANT=
 KSUD_BIN="${SUSFS_KSUD_BIN:-}"
 
 log_msg() {
 	echo "susfs4ksu: $*" >&2
+}
+
+probe_candidate() {
+	CANDIDATE_VERSION="$("$1" susfs show version 2>/dev/null)" || return 1
+	case "$CANDIDATE_VERSION" in v*) ;; *) return 1 ;; esac
+	release=${CANDIDATE_VERSION#v}
+	case "$release" in *.*.*) ;; *) return 1 ;; esac
+	major=${release%%.*}
+	release=${release#*.}
+	minor=${release%%.*}
+	release=${release#*.}
+	patch=${release%%[-+]*}
+	suffix=${release#"$patch"}
+	for part in "$major" "$minor" "$patch"; do
+		case "$part" in ''|*[!0-9]*) return 1 ;; esac
+	done
+	case "$suffix" in
+		'') ;;
+		[-+][0-9A-Za-z]*)
+			case "$suffix" in *[!0-9A-Za-z._+-]*) return 1 ;; esac
+			;;
+		*) return 1 ;;
+	esac
+	CANDIDATE_VARIANT="$("$1" susfs show variant 2>/dev/null)" || return 1
+	case "$CANDIDATE_VARIANT" in GKI|NON-GKI) ;; *) return 1 ;; esac
 }
 
 probe_backend() {
@@ -21,13 +48,17 @@ probe_backend() {
 	if [ -z "$KSUD_BIN" ]; then
 		KSUD_BIN="$(command -v ksud 2>/dev/null)"
 	fi
-	if [ -n "$KSUD_BIN" ] && "$KSUD_BIN" susfs show version >/dev/null 2>&1; then
+	if [ -n "$KSUD_BIN" ] && probe_candidate "$KSUD_BIN"; then
 		CONTROL_BACKEND=ksud-susfs
+		CONTROL_VERSION=$CANDIDATE_VERSION
+		CONTROL_VARIANT=$CANDIDATE_VARIANT
 		return 0
 	fi
 
-	if [ -x "$SUSFS_BIN" ] && "$SUSFS_BIN" susfs show version >/dev/null 2>&1; then
+	if [ -x "$SUSFS_BIN" ] && probe_candidate "$SUSFS_BIN"; then
 		CONTROL_BACKEND=reboot-susfs-v2
+		CONTROL_VERSION=$CANDIDATE_VERSION
+		CONTROL_VARIANT=$CANDIDATE_VARIANT
 		return 0
 	fi
 
@@ -147,19 +178,14 @@ show_status() {
 	fi
 
 	echo "backend=$CONTROL_BACKEND"
-	echo "compat_resukisu=yes"
-
-	if [ "$CONTROL_BACKEND" = "ksud-susfs" ]; then
-		printf 'version='
-		"$KSUD_BIN" susfs show version 2>/dev/null || true
-		printf 'variant='
-		"$KSUD_BIN" susfs show variant 2>/dev/null || true
-		echo "enabled_features:"
-		"$KSUD_BIN" susfs show enabled_features 2>/dev/null || true
-	else
-		"$SUSFS_BIN" susfs show backend 2>/dev/null || true
-		"$SUSFS_BIN" susfs show status 2>/dev/null || true
-	fi
+	case "$CONTROL_VERSION" in
+		v2.*) echo "compat_resukisu=yes" ;;
+		*) echo "compat_resukisu=unknown" ;;
+	esac
+	echo "version=$CONTROL_VERSION"
+	echo "variant=$CONTROL_VARIANT"
+	echo "enabled_features:"
+	susfs_ctl show enabled_features
 }
 
 case "${1:-status}" in
