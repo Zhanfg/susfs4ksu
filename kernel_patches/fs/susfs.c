@@ -5,6 +5,7 @@
 #include <linux/seq_file.h>
 #include <linux/printk.h>
 #include <linux/namei.h>
+#include <linux/stringhash.h>
 #include <linux/list.h>
 #include <linux/init_task.h>
 #include <linux/mutex.h>
@@ -52,6 +53,8 @@ bool susfs_is_sus_path_loop_active(void)
 DEFINE_STATIC_SRCU(susfs_srcu_sus_path_loop);
 static DEFINE_MUTEX(susfs_mutex_lock_sus_path);
 static LIST_HEAD(LH_SUS_PATH_LOOP);
+/* Writer-only index; refresh traversal remains SRCU-protected. */
+static DEFINE_HASHTABLE(SUS_PATH_LOOP_HLIST, 6);
 
 const struct qstr susfs_fake_qstr_name = QSTR_INIT("..5.u.S", 7); // used to re-test the dcache lookup, make sure you don't have file named like this!!
 
@@ -108,34 +111,47 @@ out_copy_to_user:
 }
 
 void susfs_add_sus_path_loop(void __user **user_info) {
-	struct st_susfs_sus_path_list *new_list = NULL;
+	struct st_susfs_sus_path_list *new_list, *cursor;
 	struct st_susfs_sus_path info = {0};
+	size_t length;
+	u32 hash;
 
 	if (copy_from_user(&info, (struct st_susfs_sus_path __user*)*user_info, sizeof(info))) {
 		info.err = -EFAULT;
 		goto out_copy_to_user;
 	}
 
-	if (*info.target_pathname == '\0') {
-		SUSFS_LOGE("target_pathname cannot be empty\n");
-		info.err = -EINVAL;
+	length = strnlen(info.target_pathname, sizeof(info.target_pathname));
+	if (!length || length == sizeof(info.target_pathname)) {
+		info.err = length ? -ENAMETOOLONG : -EINVAL;
 		goto out_copy_to_user;
 	}
 
-	new_list = kzalloc(sizeof(struct st_susfs_sus_path_list), GFP_KERNEL);
+	hash = full_name_hash(NULL, info.target_pathname, length);
+	mutex_lock(&susfs_mutex_lock_sus_path);
+	/* Exact path equality is required even when names hash to the same bucket. */
+	hash_for_each_possible(SUS_PATH_LOOP_HLIST, cursor, hash_node, hash) {
+		if (!strcmp(cursor->target_pathname, info.target_pathname)) {
+			info.err = 0;
+			goto out_unlock;
+		}
+	}
+
+	new_list = kzalloc(sizeof(*new_list), GFP_KERNEL);
 	if (!new_list) {
 		info.err = -ENOMEM;
-		goto out_copy_to_user;
+		goto out_unlock;
 	}
-	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+	memcpy(new_list->target_pathname, info.target_pathname, length + 1);
 	INIT_LIST_HEAD(&new_list->list);
-	mutex_lock(&susfs_mutex_lock_sus_path);
+	hash_add(SUS_PATH_LOOP_HLIST, &new_list->hash_node, hash);
 	list_add_tail_rcu(&new_list->list, &LH_SUS_PATH_LOOP);
 	if (!static_branch_unlikely(&susfs_has_sus_path_loop))
 		static_branch_enable(&susfs_has_sus_path_loop);
-	mutex_unlock(&susfs_mutex_lock_sus_path);
 	SUSFS_LOGI("target_pathname: '%s', is successfully added to LH_SUS_PATH_LOOP\n", new_list->target_pathname);
 	info.err = 0;
+out_unlock:
+	mutex_unlock(&susfs_mutex_lock_sus_path);
 out_copy_to_user:
 	if (copy_to_user(&((struct st_susfs_sus_path __user*)*user_info)->err, &info.err, sizeof(info.err))) {
 		info.err = -EFAULT;
@@ -145,14 +161,16 @@ out_copy_to_user:
 
 static void susfs_run_sus_path_loop(void) {
 	struct st_susfs_sus_path_list *cursor = NULL;
-
-	if (!susfs_is_sus_path_loop_active())
-		return;
 	struct path path;
 	struct inode *inode;
 	struct fuse_inode *fi = NULL;
-	const struct cred *saved = override_creds(ksu_cred);
-	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
+	const struct cred *saved;
+	int srcu_idx;
+
+	if (!susfs_is_sus_path_loop_active())
+		return;
+	saved = override_creds(ksu_cred);
+	srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
 
 	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
 		if (!kern_path(cursor->target_pathname, 0, &path))

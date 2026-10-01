@@ -55,9 +55,29 @@ bridge with all optional features enabled and disabled. It works in temporary
 files and preserves the supplied port checkout. Complete ReSukiSU kernel
 compilation and on-device behavior remain additional integration gates.
 
+## Dynamic rule registration
+
+Dynamic pathname registrations are now idempotent. A 64-bucket writer index
+checks exact pathname equality before allocating an entry; hash collisions
+never merge different names. Repeated module/stage registration no longer
+grows the refresh list. The existing SRCU refresh list and refresh timing stay
+in place, so pathname replacement is still resolved on refresh.
+
+On a 64-bit kernel the index adds 512 bytes of buckets and 16 bytes per unique
+rule. A refresh resolves each unique registered pathname once, rather than
+once per registration. This reduces duplicate work; it does not eliminate
+the linear scan of distinct dynamic paths. Unterminated names are rejected,
+and the full permitted 255-byte pathname is retained without silent truncation.
+
+`python3 tools/test-sus-path-loop.py` executes the production registration
+function with host kernel-API shims. It forces hash collisions, submits 1024
+registrations from eight threads, and checks duplicate allocation avoidance,
+allocation/copy failures and pathname boundaries. Kernel SRCU and VFS behavior
+still require kernel/device tests. Any future removal API must unlink both
+containers and wait for SRCU readers before freeing a rule.
+
 ## Further work
 
-- Deduplicate dynamic path registrations without changing pathname semantics.
 - Define invalidation and removal lifetimes before adding a path lookup cache.
 - Measure lookup cost and table occupancy before adopting adaptive containers.
 - Validate each kernel lane and real manager/device behavior before promotion.

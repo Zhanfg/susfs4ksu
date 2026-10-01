@@ -46,6 +46,7 @@ struct st_susfs_sus_path {
 
 struct st_susfs_sus_path_list {
 	struct list_head                        list;
+	struct hlist_node                       hash_node;
 	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
 };
 #endif
