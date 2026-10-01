@@ -65,12 +65,13 @@ test "$(cat "$ksu/ksu-target.txt")" = new
 cmp "$ROOT_DIR/kernel_patches/fs/susfs.c" "$kernel/fs/susfs.c"
 cmp "$ROOT_DIR/kernel_patches/include/linux/susfs.h" "$kernel/include/linux/susfs.h"
 cmp "$ROOT_DIR/kernel_patches/include/linux/susfs_def.h" "$kernel/include/linux/susfs_def.h"
+cmp "$ROOT_DIR/kernel_patches/include/uapi/linux/susfs_abi.h" "$kernel/include/uapi/linux/susfs_abi.h"
 bash "$PATCHCTL" apply "${common_args[@]}"
 
 echo "[*] transactional rollback"
 git -C "$kernel" reset --hard -q HEAD
 git -C "$ksu" reset --hard -q HEAD
-rm -rf "$kernel/fs/susfs.c" "$kernel/include/linux/susfs.h" "$kernel/include/linux/susfs_def.h"
+rm -rf "$kernel/fs/susfs.c" "$kernel/include/linux/susfs.h" "$kernel/include/linux/susfs_def.h" "$kernel/include/uapi/linux/susfs_abi.h"
 # Create a directory where a regular file must be installed. --replace-source
 # allows preflight to continue so the failure happens inside the transaction.
 mkdir -p "$kernel/fs/susfs.c"
@@ -85,5 +86,6 @@ test "$(cat "$kernel/kernel-target.txt")" = old
 test "$(cat "$ksu/ksu-target.txt")" = old
 git -C "$kernel" diff --quiet -- kernel-target.txt
 git -C "$ksu" diff --quiet -- ksu-target.txt
+test ! -e "$kernel/include/uapi/linux/susfs_abi.h"
 
 echo "[+] patchctl transaction tests passed"

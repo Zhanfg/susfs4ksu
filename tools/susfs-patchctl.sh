@@ -280,6 +280,7 @@ source_pairs() {
 $ROOT_DIR/kernel_patches/fs/susfs.c|$KERNEL_TREE/fs/susfs.c
 $ROOT_DIR/kernel_patches/include/linux/susfs.h|$KERNEL_TREE/include/linux/susfs.h
 $ROOT_DIR/kernel_patches/include/linux/susfs_def.h|$KERNEL_TREE/include/linux/susfs_def.h
+$ROOT_DIR/kernel_patches/include/uapi/linux/susfs_abi.h|$KERNEL_TREE/include/uapi/linux/susfs_abi.h
 EOF
 }
 

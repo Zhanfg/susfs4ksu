@@ -14,32 +14,6 @@
 
 
 
-struct st_susfs_enabled_features {
-	char enabled_features[SUSFS_ENABLED_FEATURES_SIZE];
-	int err;
-};
-
-struct st_susfs_variant {
-	char susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
-	int err;
-};
-
-struct st_susfs_version {
-	char susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
-	int err;
-};
-
-struct st_susfs_capabilities {
-	uint32_t abi_version;
-	uint32_t struct_size;
-	uint64_t compiled_features;
-	uint64_t runtime_features;
-	char susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
-	char susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
-	int32_t err;
-	uint32_t reserved;
-};
-
 struct capability_name {
 	uint64_t bit;
 	const char *name;
@@ -76,11 +50,24 @@ static void print_help(void)
 	show_print_help();
 }
 
+/* Legacy adapters may leave the payload sentinel unchanged for new commands. */
+static int query_result(unsigned int cmd, void *info, int *err)
+{
+	long result = susfs_control_call(cmd, info);
+
+	if (*err == ERR_CMD_NOT_SUPPORTED && result < 0 && errno &&
+	    errno != EINVAL && errno != ENOSYS && errno != EOPNOTSUPP)
+		return -errno;
+	return *err;
+}
+
 static int query_version(struct st_susfs_version *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	susfs_control_call(CMD_SUSFS_SHOW_VERSION, info);
+	info->err = query_result(CMD_SUSFS_SHOW_VERSION, info, &info->err);
+	if (!info->err && !memchr(info->susfs_version, '\0', sizeof(info->susfs_version)))
+		info->err = -EPROTO;
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_VERSION);
 	return info->err;
 }
@@ -89,7 +76,9 @@ static int query_variant(struct st_susfs_variant *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	susfs_control_call(CMD_SUSFS_SHOW_VARIANT, info);
+	info->err = query_result(CMD_SUSFS_SHOW_VARIANT, info, &info->err);
+	if (!info->err && !memchr(info->susfs_variant, '\0', sizeof(info->susfs_variant)))
+		info->err = -EPROTO;
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_VARIANT);
 	return info->err;
 }
@@ -98,7 +87,9 @@ static int query_enabled_features(struct st_susfs_enabled_features *info)
 {
 	memset(info, 0, sizeof(*info));
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	susfs_control_call(CMD_SUSFS_SHOW_ENABLED_FEATURES, info);
+	info->err = query_result(CMD_SUSFS_SHOW_ENABLED_FEATURES, info, &info->err);
+	if (!info->err && !memchr(info->enabled_features, '\0', sizeof(info->enabled_features)))
+		info->err = -EPROTO;
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info->err, CMD_SUSFS_SHOW_ENABLED_FEATURES);
 	return info->err;
 }
@@ -109,7 +100,14 @@ static int query_capabilities(struct st_susfs_capabilities *info)
 	info->abi_version = SUSFS_CAPS_ABI_VERSION;
 	info->struct_size = sizeof(*info);
 	info->err = ERR_CMD_NOT_SUPPORTED;
-	susfs_control_call(CMD_SUSFS_QUERY_CAPABILITIES, info);
+	info->err = query_result(CMD_SUSFS_QUERY_CAPABILITIES, info, &info->err);
+	if (!info->err &&
+	    (info->abi_version != SUSFS_CAPS_ABI_VERSION ||
+	     info->struct_size < sizeof(*info) ||
+	     (info->runtime_features & ~info->compiled_features) ||
+	     !memchr(info->susfs_version, '\0', sizeof(info->susfs_version)) ||
+	     !memchr(info->susfs_variant, '\0', sizeof(info->susfs_variant))))
+		info->err = -EPROTO;
 	return info->err;
 }
 

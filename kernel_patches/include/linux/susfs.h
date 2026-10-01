@@ -164,36 +164,6 @@ struct st_susfs_avc_log_spoofing {
 	int                                     err;
 };
 
-/* get enabled features */
-struct st_susfs_enabled_features {
-	char                                    enabled_features[SUSFS_ENABLED_FEATURES_SIZE];
-	int                                     err;
-};
-
-/* show variant */
-struct st_susfs_variant {
-	char                                    susfs_variant[16];
-	int                                     err;
-};
-
-/* show version */
-struct st_susfs_version {
-	char                                    susfs_version[16];
-	int                                     err;
-};
-
-/* Versioned, allocation-free capability query ABI. */
-struct st_susfs_capabilities {
-	__u32                                   abi_version;
-	__u32                                   struct_size;
-	__u64                                   compiled_features;
-	__u64                                   runtime_features;
-	char                                    susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
-	char                                    susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
-	__s32                                   err;
-	__u32                                   reserved;
-};
-
 /***********************/
 /* FORWARD DECLARATION */
 /***********************/

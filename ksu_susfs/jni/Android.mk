@@ -4,6 +4,7 @@ include $(CLEAR_VARS)
 
 LOCAL_MODULE    := ksu_susfs
 LOCAL_C_INCLUDES += $(LOCAL_PATH)/includes
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../../kernel_patches/include/uapi
 ALL_C_FILES := $(wildcard $(LOCAL_PATH)/*.c)
 ALL_C_FILES += $(wildcard $(LOCAL_PATH)/features/*.c)
 LOCAL_SRC_FILES := $(ALL_C_FILES:$(LOCAL_PATH)/%=%)

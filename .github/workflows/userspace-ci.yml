@@ -7,6 +7,9 @@ on:
       - "next-dev"
       - "next"
     paths:
+      - "kernel_patches/include/uapi/**"
+      - "tests/**"
+      - "tools/test-control-api.sh"
       - "ksu_susfs/**"
       - "ksu_module_susfs/**"
       - "build_ksu_susfs_tool.sh"
@@ -66,11 +69,15 @@ jobs:
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "$ndk_dir" >> "$GITHUB_PATH"
 
+      - name: Validate wire ABI and legacy capability fallback
+        shell: bash
+        run: bash tools/test-control-api.sh
+
       - name: Restore incremental NDK objects
         uses: actions/cache@v6
         with:
           path: ksu_susfs/.build
-          key: susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-${{ hashFiles('ksu_susfs/jni/**') }}
+          key: susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-${{ hashFiles('ksu_susfs/jni/**', 'kernel_patches/include/uapi/**') }}
           restore-keys: |
             susfs-obj-${{ runner.os }}-${{ env.NDK_RELEASE }}-
 

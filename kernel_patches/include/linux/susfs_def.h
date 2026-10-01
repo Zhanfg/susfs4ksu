@@ -7,50 +7,7 @@
 /********/
 /* ENUM */
 /********/
-/* shared with userspace ksu_susfs tool */
-#define SUSFS_MAGIC 0xFAFAFAFA
-#define CMD_SUSFS_ADD_SUS_PATH 0x55550
-#define CMD_SUSFS_SET_ANDROID_DATA_ROOT_PATH 0x55551 /* deprecated */
-#define CMD_SUSFS_SET_SDCARD_ROOT_PATH 0x55552 /* deprecated */
-#define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
-#define CMD_SUSFS_ADD_SUS_MOUNT 0x55560 /* deprecated */
-#define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
-#define CMD_SUSFS_UMOUNT_FOR_ZYGOTE_ISO_SERVICE 0x55562 /* deprecated */
-#define CMD_SUSFS_ADD_SUS_KSTAT 0x55570
-#define CMD_SUSFS_UPDATE_SUS_KSTAT 0x55571
-#define CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY 0x55572
-#define CMD_SUSFS_ADD_TRY_UMOUNT 0x55580 /* deprecated */
-#define CMD_SUSFS_SET_UNAME 0x55590
-#define CMD_SUSFS_ENABLE_LOG 0x555a0
-#define CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG 0x555b0
-#define CMD_SUSFS_ADD_OPEN_REDIRECT 0x555c0
-#define CMD_SUSFS_SHOW_VERSION 0x555e1
-#define CMD_SUSFS_SHOW_ENABLED_FEATURES 0x555e2
-#define CMD_SUSFS_SHOW_VARIANT 0x555e3
-#define CMD_SUSFS_QUERY_CAPABILITIES 0x555e5
-#define CMD_SUSFS_SHOW_SUS_SU_WORKING_MODE 0x555e4 /* deprecated */
-#define CMD_SUSFS_IS_SUS_SU_READY 0x555f0 /* deprecated */
-#define CMD_SUSFS_SUS_SU 0x60000 /* deprecated */
-#define CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING 0x60010
-#define CMD_SUSFS_ADD_SUS_MAP 0x60020
-
-#define SUSFS_MAX_LEN_PATHNAME 256 // 256 should address many paths already unless you are doing some strange experimental stuff, then set your own desired length
-#define SUSFS_FAKE_CMDLINE_OR_BOOTCONFIG_SIZE 8192 // 8192 is enough I guess
-#define SUSFS_ENABLED_FEATURES_SIZE 8192 // 8192 is enough I guess
-#define SUSFS_MAX_VERSION_BUFSIZE 16
-#define SUSFS_MAX_VARIANT_BUFSIZE 16
-#define SUSFS_CAPS_ABI_VERSION 1
-
-#define SUSFS_CAP_SUS_PATH BIT_ULL(0)
-#define SUSFS_CAP_SUS_MOUNT BIT_ULL(1)
-#define SUSFS_CAP_SUS_KSTAT BIT_ULL(2)
-#define SUSFS_CAP_SPOOF_UNAME BIT_ULL(3)
-#define SUSFS_CAP_ENABLE_LOG BIT_ULL(4)
-#define SUSFS_CAP_HIDE_SYMBOLS BIT_ULL(5)
-#define SUSFS_CAP_SPOOF_CMDLINE_OR_BOOTCONFIG BIT_ULL(6)
-#define SUSFS_CAP_OPEN_REDIRECT BIT_ULL(7)
-#define SUSFS_CAP_SUS_MAP BIT_ULL(8)
-#define SUSFS_CAP_AVC_LOG_SPOOFING BIT_ULL(9)
+#include <uapi/linux/susfs_abi.h>
 
 #define TRY_UMOUNT_DEFAULT 0 /* used by susfs_try_umount() */
 #define TRY_UMOUNT_DETACH 1 /* used by susfs_try_umount() */

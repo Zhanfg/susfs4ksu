@@ -2,7 +2,6 @@
 #define SUSFS_UTILS_H
 
 #include <stdio.h>
-#include <android/log.h>
 #include <sys/stat.h>
 #include <ctype.h>
 

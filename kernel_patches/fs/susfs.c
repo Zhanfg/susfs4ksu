@@ -1254,6 +1254,12 @@ void susfs_query_capabilities(void __user **user_info) {
 		goto out_copy_to_user;
 	}
 
+	/* Reply fields describe the kernel, never caller-supplied state. */
+	info.struct_size = sizeof(info);
+	info.runtime_features = 0;
+	info.reserved = 0;
+	memset(info.susfs_version, 0, sizeof(info.susfs_version));
+	memset(info.susfs_variant, 0, sizeof(info.susfs_variant));
 	info.compiled_features = SUSFS_CAP_AVC_LOG_SPOOFING;
 
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
