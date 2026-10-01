@@ -7,9 +7,13 @@ on:
       - "next-dev"
       - "next"
     paths:
+      - "kernel_patches/fs/**"
+      - "kernel_patches/include/linux/**"
       - "kernel_patches/include/uapi/**"
+      - "kernel_patches/ReSukiSU/**"
       - "tests/**"
       - "tools/test-control-api.sh"
+      - "tools/test-command-dispatch.py"
       - "ksu_susfs/**"
       - "ksu_module_susfs/**"
       - "build_ksu_susfs_tool.sh"
@@ -30,6 +34,31 @@ env:
   NDK_VERSION: 27.2.12479018
 
 jobs:
+  validate-resukisu-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate dispatcher on the pinned ReSukiSU source
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="$RUNNER_TEMP/ReSukiSU"
+          python3 - <<'PY' > "$RUNNER_TEMP/resukisu-inputs"
+          import json
+          from pathlib import Path
+          d = json.loads(Path('kernel_patches/ReSukiSU/adapter.json').read_text())
+          print(d['repository'])
+          print(d['baseline_commit'])
+          PY
+          mapfile -t inputs < "$RUNNER_TEMP/resukisu-inputs"
+          git init -q "$port"
+          git -C "$port" remote add origin "${inputs[0]}"
+          git -C "$port" fetch --depth=1 origin "${inputs[1]}"
+          git -C "$port" checkout --detach FETCH_HEAD
+          test "$(git -C "$port" rev-parse HEAD)" = "${inputs[1]}"
+          python3 tools/verify_unified_diff.py kernel_patches/ReSukiSU/10_shared_susfs_dispatch.patch
+          python3 tools/test-command-dispatch.py --resukisu-tree "$port"
+
   build-userspace-and-module:
     runs-on: ubuntu-latest
     steps:
@@ -71,7 +100,9 @@ jobs:
 
       - name: Validate wire ABI and legacy capability fallback
         shell: bash
-        run: bash tools/test-control-api.sh
+        run: |
+          bash tools/test-control-api.sh
+          python3 tools/test-command-dispatch.py
 
       - name: Restore incremental NDK objects
         uses: actions/cache@v6

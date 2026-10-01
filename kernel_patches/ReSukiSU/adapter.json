@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/ReSukiSU/ReSukiSU.git",
+  "baseline_commit": "83850e8e93c5f7cfaec69cf03707f13e799df36a",
+  "patch": "kernel_patches/ReSukiSU/10_shared_susfs_dispatch.patch",
+  "scope": "Command bridge only; an existing SUSFS kernel integration is required."
+}

@@ -34,9 +34,29 @@ reply tests plus ARM32/ARM64 ABI layout compilation. Tests cover modern and
 legacy replies, unsupported commands, permission errors and malformed replies.
 These checks do not establish Android device runtime compatibility.
 
+## Shared command bridge
+
+`susfs_handle_command(cmd, arg)` lives in the canonical core. It selects
+compiled features and discovery commands for every port. The official
+KernelSU adapter now performs its existing magic/root checks and delegates
+to this function. No new symbol exports or VFS hooks are introduced.
+
+For an already SUSFS-integrated ReSukiSU kernel, apply
+`kernel_patches/ReSukiSU/10_shared_susfs_dispatch.patch` to the pinned
+ReSukiSU source specified in `adapter.json`. This small adapter preserves
+ReSukiSU's caller authentication. With modern headers it delegates to shared
+dispatch, including capability queries; with upstream legacy headers it keeps
+the original dispatcher. The official KernelSU patch is a separate adapter
+and must not be applied on top of ReSukiSU.
+
+`python3 tools/test-command-dispatch.py --resukisu-tree /path/to/ReSukiSU`
+checks direct patch application and exercises the actual patched command
+bridge with all optional features enabled and disabled. It works in temporary
+files and preserves the supplied port checkout. Complete ReSukiSU kernel
+compilation and on-device behavior remain additional integration gates.
+
 ## Further work
 
-- Keep command dispatch in shared core and leave authentication to each port.
 - Deduplicate dynamic path registrations without changing pathname semantics.
 - Define invalidation and removal lifetimes before adding a path lookup cache.
 - Measure lookup cost and table occupancy before adopting adaptive containers.

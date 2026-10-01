@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Linux-syscall-note
 #ifndef _UAPI_LINUX_SUSFS_ABI_H
 #define _UAPI_LINUX_SUSFS_ABI_H
 

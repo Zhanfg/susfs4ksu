@@ -10,6 +10,7 @@
 #include <linux/statfs.h>
 
 #define SUSFS_VERSION "v2.3.0"
+#define SUSFS_HAS_COMMAND_DISPATCHER 1
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
 #define SUSFS_VARIANT "NON-GKI"
 #else
@@ -167,6 +168,9 @@ struct st_susfs_avc_log_spoofing {
 /***********************/
 /* FORWARD DECLARATION */
 /***********************/
+/* Authenticated kernel-port command entry point. */
+int susfs_handle_command(unsigned int cmd, void __user **arg);
+
 /* sus_path */
 bool susfs_is_sus_path_loop_active(void);
 #ifdef CONFIG_KSU_SUSFS_SUS_PATH
