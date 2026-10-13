@@ -82,6 +82,46 @@ is_enabled() {
 	[ "${1:-0}" = "1" ] || [ "${1:-}" = "true" ] || [ "${1:-}" = "on" ]
 }
 
+# KSTAT metadata rules are opt-in. A capture must occur before any overlay
+# changes the inode; the corresponding update belongs after the overlay.
+# A static rule is independent of that two-stage operation.
+kstat_path_valid() {
+  case "$1" in
+    /*) [ -n "$1" ] ;;
+    *) log_msg "KSTAT requires an absolute target path"; return 2 ;;
+  esac
+}
+
+kstat_apply_static() {
+  local spec="$1" field_count=1 rest old_ifs
+  local path ino dev nlink size atime atime_nsec mtime mtime_nsec ctime ctime_nsec blocks blksize
+  rest=$spec
+  # Path plus exactly twelve data fields; reject truncated and extra fields.
+  while [ "$rest" != "${rest#*|}" ]; do
+    field_count=$((field_count + 1))
+    rest=${rest#*|}
+  done
+  if [ "$field_count" -ne 13 ]; then
+    log_msg "kstat_static requires path and exactly 12 metadata fields"
+    return 2
+  fi
+  old_ifs=$IFS
+  IFS='|' read -r path ino dev nlink size atime atime_nsec mtime mtime_nsec ctime ctime_nsec blocks blksize <<EOF
+$spec
+EOF
+  IFS=$old_ifs
+  kstat_path_valid "$path" || return $?
+  for field in "$ino" "$dev" "$nlink" "$size" "$atime" "$atime_nsec" "$mtime" "$mtime_nsec" "$ctime" "$ctime_nsec" "$blocks" "$blksize"; do
+    if [ -z "$field" ]; then
+      log_msg "kstat_static has an empty metadata field"
+      return 2
+    fi
+  done
+  susfs_ctl add_sus_kstat_statically "$path" "$ino" "$dev" "$nlink" "$size" \
+    "$atime" "$atime_nsec" "$mtime" "$mtime_nsec" "$ctime" "$ctime_nsec" \
+    "$blocks" "$blksize"
+}
+
 apply_post_fs_data() {
 	[ -f "$CONFIG_FILE" ] || return 0
 
@@ -102,6 +142,13 @@ apply_post_fs_data() {
 				;;
 			sus_path)
 				[ -n "$value" ] && susfs_ctl add_sus_path "$value" >/dev/null 2>&1 || true
+				;;
+			kstat_capture)
+				kstat_path_valid "$value" || return $?
+				susfs_ctl add_sus_kstat "$value" || return $?
+				;;
+			kstat_static)
+				kstat_apply_static "$value" || return $?
 				;;
 			open_redirect)
 				OLDIFS=$IFS
@@ -145,6 +192,14 @@ apply_boot_completed() {
 			sus_map)
 				[ -n "$value" ] && susfs_ctl add_sus_map "$value" >/dev/null 2>&1 || true
 				;;
+			kstat_update)
+				kstat_path_valid "$value" || return $?
+				susfs_ctl update_sus_kstat "$value" || return $?
+				;;
+			kstat_update_full_clone)
+				kstat_path_valid "$value" || return $?
+				susfs_ctl update_sus_kstat_full_clone "$value" || return $?
+				;;
 		esac
 	done < "$CONFIG_FILE"
 }
@@ -162,9 +217,9 @@ run_stage_once() {
 	}
 
 	case "$stage" in
-		post-fs-data) apply_post_fs_data ;;
+		post-fs-data) apply_post_fs_data || return $? ;;
 		service) : ;;
-		boot-completed) apply_boot_completed ;;
+		boot-completed) apply_boot_completed || return $? ;;
 		*) log_msg "unknown stage: $stage"; return 2 ;;
 	esac
 
