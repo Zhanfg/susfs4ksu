@@ -11,6 +11,7 @@ on:
     paths:
       - "ksu_module_susfs/**"
       - ".github/workflows/module-ci.yml"
+      - "tools/test-module-controller.py"
   workflow_dispatch:
 
 permissions:
@@ -68,6 +69,9 @@ jobs:
 
           SUSFS_KSUD_BIN="$tmp/ksud"           SUSFS_RUNTIME_DIR="$tmp/runtime"           sh ksu_module_susfs/controller.sh status | grep -q '^compat_resukisu=yes$'
 
+      - name: Run portable-core private-helper and backend regression tests
+        run: python3 tools/test-module-controller.py
+
       - name: Validate direct fallback backend
         shell: bash
         run: |
@@ -77,6 +81,10 @@ jobs:
           #!/bin/sh
           if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "version" ]; then
             echo "v2.3.0"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "variant" ]; then
+            echo "GKI"
             exit 0
           fi
           if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "backend" ]; then
@@ -106,6 +114,10 @@ jobs:
           #!/bin/sh
           if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "version" ]; then
             echo "v2.3.0"
+            exit 0
+          fi
+          if [ "$1" = "susfs" ] && [ "$2" = "show" ] && [ "$3" = "variant" ]; then
+            echo "GKI"
             exit 0
           fi
           printf '%s\n' "$*" >> "$SUSFS_TEST_LOG"
