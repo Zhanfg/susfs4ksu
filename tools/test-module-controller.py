@@ -44,6 +44,9 @@ case "$1:$2:$3" in
   susfs:show:variant) printf '%s\\n' "$TEST_{kind}_VARIANT"; exit "$TEST_{kind}_EXIT" ;;
   susfs:show:enabled_features) echo CONFIG_KSU_SUSFS_SUS_PATH; exit "$TEST_{kind}_FEATURE_EXIT" ;;
 esac
+if [ -n "$TEST_FAIL_CMD" ] && [ "$2" = "$TEST_FAIL_CMD" ]; then
+  exit 42
+fi
 exit 0
 ''')
         path.chmod(0o755)
@@ -159,6 +162,25 @@ exit 0
                 result = self.run_controller(action)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(marker.exists())
+
+    def test_metadata_backend_error_preserves_retry(self) -> None:
+        for action, rule, fail_command in (
+            ("post-fs-data", "kstat_capture=/system/test", "add_sus_kstat"),
+            ("boot-completed", "kstat_update=/system/test", "update_sus_kstat"),
+        ):
+            with self.subTest(action=action):
+                self.env["TEST_FAIL_CMD"] = fail_command
+                self.config.write_text("enabled=1\n" + rule + "\n")
+                marker = self.directory / f"runtime/{action}.done"
+                marker.unlink(missing_ok=True)
+                result = self.run_controller(action)
+                self.assertEqual(result.returncode, 42, result.stderr)
+                self.assertFalse(marker.exists())
+                self.env.pop("TEST_FAIL_CMD", None)
+                retried = self.run_controller(action)
+                self.assertEqual(retried.returncode, 0, retried.stderr)
+                self.assertTrue(marker.exists())
+                marker.unlink(missing_ok=True)
 
     def test_metadata_disabled_is_inert(self) -> None:
         self.config.write_text("enabled=0\nkstat_capture=/system/test\n"
