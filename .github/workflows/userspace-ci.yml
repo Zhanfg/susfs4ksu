@@ -15,6 +15,16 @@ on:
       - "build_ksu_module.sh"
       - "build_all.sh"
       - ".github/workflows/userspace-ci.yml"
+  pull_request:
+    branches:
+      - "vendor/oneplus13-sm8750-a16"
+    paths:
+      - "ksu_susfs/**"
+      - "ksu_module_susfs/**"
+      - "build_ksu_susfs_tool.sh"
+      - "build_ksu_module.sh"
+      - "build_all.sh"
+      - ".github/workflows/userspace-ci.yml"
   workflow_dispatch:
 
 concurrency:
