@@ -1,0 +1,48 @@
+name: OnePlus 13 SUSFS Next Feature Integration
+
+on:
+  pull_request:
+    branches:
+      - vendor/oneplus13-sm8750-a16
+    paths:
+      - 'ksu_module_susfs/controller.sh'
+      - 'ksu_module_susfs/customize.sh'
+      - 'ksu_module_susfs/uninstall.sh'
+      - 'tools/test-module-controller.py'
+      - 'tests/check_sus_path_errno.py'
+      - '.github/workflows/next-6.6-feature-integration.yml'
+  push:
+    branches:
+      - integration/next-6.6-features-20261014
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-regression:
+    name: Private helper install, backend discovery and errno patch guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify shell and Python syntax
+        run: |
+          set -euo pipefail
+          sh -n ksu_module_susfs/controller.sh
+          sh -n ksu_module_susfs/customize.sh
+          sh -n ksu_module_susfs/uninstall.sh
+          python3 -m py_compile tools/test-module-controller.py tests/check_sus_path_errno.py
+      - name: Backend, installation and hardlink safety regression
+        run: python3 tools/test-module-controller.py
+      - name: Known VFS SUS_PATH errno ordering
+        run: python3 tests/check_sus_path_errno.py
+      - name: Confirm module installer avoids modifying manager paths
+        run: |
+          set -euo pipefail
+          ! grep -Eq 'cp[[:space:]].*"\$DEST_BIN_DIR/ksu_susfs"' ksu_module_susfs/customize.sh
+          ! grep -Fq 'rm -f /data/adb/ksu/bin/ksu_susfs' ksu_module_susfs/uninstall.sh
+          grep -Fq 'MODPATH/bin/ksu_susfs' ksu_module_susfs/customize.sh
+      - name: State test boundaries
+        run: |
+          echo "Host tests only: full OnePlus sun / sun16k kernels, KMI, VFS runtime and boot remain unverified."
