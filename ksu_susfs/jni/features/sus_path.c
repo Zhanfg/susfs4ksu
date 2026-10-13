@@ -67,8 +67,9 @@ int add_sus_path(int argc, char *argv[]) {
 		return errno;
 	}
 
-	if (copy_full_sus_path(info.target_pathname, resolved_pathname))
-		return -ENAMETOOLONG;
+	int path_status = copy_full_sus_path(info.target_pathname, resolved_pathname);
+	if (path_status)
+		return path_status;
 	info.err = ERR_CMD_NOT_SUPPORTED;
 	susfs_control_call(CMD_SUSFS_ADD_SUS_PATH, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_PATH);
@@ -88,8 +89,9 @@ int add_sus_path_loop(int argc, char *argv[]) {
 		return -EINVAL;
 	}
 
-	if (copy_full_sus_path(info.target_pathname, argv[2]))
-		return -ENAMETOOLONG;
+	int path_status = copy_full_sus_path(info.target_pathname, argv[2]);
+	if (path_status)
+		return path_status;
 	info.err = ERR_CMD_NOT_SUPPORTED;
 	susfs_control_call(CMD_SUSFS_ADD_SUS_PATH_LOOP, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_PATH_LOOP);
