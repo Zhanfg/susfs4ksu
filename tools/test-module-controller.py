@@ -44,6 +44,9 @@ case "$1:$2:$3" in
   susfs:show:variant) printf '%s\\n' "$TEST_{kind}_VARIANT"; exit "$TEST_{kind}_EXIT" ;;
   susfs:show:enabled_features) echo CONFIG_KSU_SUSFS_SUS_PATH; exit "$TEST_{kind}_FEATURE_EXIT" ;;
 esac
+if [ -n "$TEST_FAIL_CMD" ] && [ "$2" = "$TEST_FAIL_CMD" ]; then
+  exit 42
+fi
 exit 0
 ''')
         path.chmod(0o755)
@@ -105,6 +108,87 @@ exit 0
                          ["NATIVE susfs enable_log 0", "NATIVE susfs add_sus_path /system/test",
                           "NATIVE susfs add_sus_path_loop /sdcard/test",
                           "NATIVE susfs add_sus_map /system/lib64/test.so"])
+
+    def test_metadata_capture_then_update_staged(self) -> None:
+        self.config.write_text("enabled=1\nkstat_capture=/system/test\n"
+                               "kstat_update=/system/test\n")
+        result = self.run_controller("post-fs-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_controller("boot-completed").returncode, 0)
+        commands = [x for x in self.log.read_text().splitlines() if " show " not in x]
+        self.assertEqual(commands, ["NATIVE susfs add_sus_kstat /system/test",
+                                    "NATIVE susfs update_sus_kstat /system/test"])
+
+    def test_metadata_static_all_default_fields(self) -> None:
+        metadata = "|".join(["default"] * 12)
+        self.config.write_text(f"enabled=1\nkstat_static=/system/test|{metadata}\n")
+        result = self.run_controller("post-fs-data")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [x for x in self.log.read_text().splitlines() if " show " not in x]
+        self.assertEqual(commands, ["NATIVE susfs add_sus_kstat_statically /system/test " +
+                                    " ".join(["default"] * 12)])
+
+    def test_metadata_full_clone_update(self) -> None:
+        self.config.write_text("enabled=1\nkstat_update_full_clone=/system/test\n")
+        result = self.run_controller("boot-completed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("NATIVE susfs update_sus_kstat_full_clone /system/test",
+                      self.log.read_text())
+
+    def test_metadata_malformed_fields_rejected_before_mutation(self) -> None:
+        for metadata in ("default|default", "|".join(["default"] * 13),
+                         "|".join(["default"] * 11 + [""])):
+            with self.subTest(metadata=metadata):
+                self.log.unlink(missing_ok=True)
+                marker = self.directory / "runtime/post-fs-data.done"
+                marker.unlink(missing_ok=True)
+                self.config.write_text(f"enabled=1\nkstat_static=/system/test|{metadata}\n")
+                result = self.run_controller("post-fs-data")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists())
+                if self.log.exists():
+                    self.assertFalse(any(" add_sus_kstat_statically " in x
+                                         for x in self.log.read_text().splitlines()))
+
+    def test_metadata_rejects_relative_paths(self) -> None:
+        for action, config in (
+            ("post-fs-data", "enabled=1\nkstat_capture=relative/file\n"),
+            ("boot-completed", "enabled=1\nkstat_update=relative/file\n"),
+        ):
+            with self.subTest(action=action):
+                self.config.write_text(config)
+                marker = self.directory / f"runtime/{action}.done"
+                marker.unlink(missing_ok=True)
+                result = self.run_controller(action)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(marker.exists())
+
+    def test_metadata_backend_error_preserves_retry(self) -> None:
+        for action, rule, fail_command in (
+            ("post-fs-data", "kstat_capture=/system/test", "add_sus_kstat"),
+            ("boot-completed", "kstat_update=/system/test", "update_sus_kstat"),
+        ):
+            with self.subTest(action=action):
+                self.env["TEST_FAIL_CMD"] = fail_command
+                self.config.write_text("enabled=1\n" + rule + "\n")
+                marker = self.directory / f"runtime/{action}.done"
+                marker.unlink(missing_ok=True)
+                result = self.run_controller(action)
+                self.assertEqual(result.returncode, 42, result.stderr)
+                self.assertFalse(marker.exists())
+                self.env.pop("TEST_FAIL_CMD", None)
+                retried = self.run_controller(action)
+                self.assertEqual(retried.returncode, 0, retried.stderr)
+                self.assertTrue(marker.exists())
+                marker.unlink(missing_ok=True)
+
+    def test_metadata_disabled_is_inert(self) -> None:
+        self.config.write_text("enabled=0\nkstat_capture=/system/test\n"
+                               "kstat_update=/system/test\n")
+        self.assertEqual(self.run_controller("post-fs-data").returncode, 0)
+        self.assertEqual(self.run_controller("boot-completed").returncode, 0)
+        self.assertFalse(any(" add_sus_kstat " in x or " update_sus_kstat " in x
+                             for x in self.log.read_text().splitlines()))
 
     def test_installer_preserves_manager_hardlink(self) -> None:
         module = self.directory / "installed-module"

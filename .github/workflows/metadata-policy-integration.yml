@@ -1,0 +1,48 @@
+name: SUSFS 6.6 metadata-policy integration
+
+on:
+  push:
+    branches:
+      - feature/op13-hide-kstat-policy-20261014
+  pull_request:
+    branches:
+      - vendor/oneplus13-sm8750-a16
+    paths:
+      - 'ksu_module_susfs/**'
+      - 'tools/test-module-controller.py'
+      - '.github/workflows/metadata-policy-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: |
+          set -eu
+          dash -n ksu_module_susfs/controller.sh
+          dash -n ksu_module_susfs/customize.sh
+      - name: Test controller and staged feature behavior
+        run: python3 tools/test-module-controller.py
+      - name: Check source-level metadata feature wiring
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          ctl = Path("ksu_module_susfs/controller.sh").read_text()
+          cli = Path("ksu_susfs/jni/features/sus_kstat.c").read_text()
+          header = Path("kernel_patches/include/linux/susfs.h").read_text()
+          for symbol in ("kstat_capture)", "kstat_update)", "kstat_update_full_clone)", "kstat_static)"):
+              assert symbol in ctl, symbol
+          for symbol in ("add_sus_kstat_statically", "add_sus_kstat(", "update_sus_kstat(", "update_sus_kstat_full_clone("):
+              assert symbol in cli, symbol
+          assert "CONFIG_KSU_SUSFS_SUS_KSTAT" in header
+          print("PASS: controller/CLI/kernel source routes exist")
+          PY
+      - name: Report validation scope
+        run: |
+          echo 'Host-only regression checks: no Android VFS runtime or boot validation is implied.'
