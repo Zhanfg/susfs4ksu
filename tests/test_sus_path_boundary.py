@@ -5,6 +5,8 @@ This is a source contract and exhaustive model of the 256-byte input buffer.
 The full kernel object build and live VFS behavior are separate requirements.
 """
 from pathlib import Path
+import subprocess
+import tempfile
 
 text = Path("kernel_patches/fs/susfs.c").read_text(encoding="utf-8")
 names = ("susfs_add_sus_path", "susfs_add_sus_path_loop")
@@ -41,5 +43,45 @@ assert b"x" * 256 != b"x" * 255 + b"\x00"
 for payload in (b"\x00" * 256, b"x" * 256):
     length_bounded = payload.find(b"\x00")
     assert length_bounded in (0, -1)  # Empty or unterminated: rejected.
+
+# Compile and execute the exact production userspace copy helper, exercising
+# every possible valid length and several impossible/overlong lengths.
+cli = Path("ksu_susfs/jni/features/sus_path.c").read_text(encoding="utf-8")
+helper_start = cli.index("static int copy_full_sus_path(")
+helper_end = cli.index("\n}\n", helper_start) + 2
+helper = cli[helper_start:helper_end]
+assert "strncpy(info.target_pathname" not in cli
+assert cli.count("copy_full_sus_path(info.target_pathname") == 2
+code = r"""
+#include <errno.h>
+#include <stddef.h>
+#include <string.h>
+#define SUSFS_MAX_LEN_PATHNAME 256
+""" + helper + r"""
+int main(void) {
+  char in[300] = {0}, out[SUSFS_MAX_LEN_PATHNAME];
+  size_t n;
+  if (copy_full_sus_path(out, "") != -EINVAL) return 1;
+  for (n = 1; n < sizeof(in); n++) {
+    memset(in, 'x', n);
+    in[n] = '\0';
+    memset(out, 'z', sizeof(out));
+    int rc = copy_full_sus_path(out, in);
+    if (n >= sizeof(out)) {
+      if (rc != -ENAMETOOLONG) return 2;
+    } else if (rc || out[n] || memcmp(out, in, n)) {
+      return 3;
+    }
+  }
+  return 0;
+}
+"""
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "boundary.c"
+    exe = Path(tmp) / "boundary"
+    source.write_text(code)
+    subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
+                    str(source), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
 
 print("PASS: SUS_PATH/SUS_PATH_LOOP enforce NUL and preserve 255 bytes")
