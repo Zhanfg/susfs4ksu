@@ -74,11 +74,29 @@ if [ ! -d "$WORKSPACE/.repo" ]; then
   )
 fi
 
-(
-  cd "$WORKSPACE"
-  "$REPO_BIN" sync \
-    -c -j4 --no-tags --prune --no-repo-verify
-)
+# Transient 502/503 failures on android.googlesource.com are common during
+# large multi-project syncs. Preserve successful downloads and retry only the
+# sync stage. No source revision changes or unverified mirror fallbacks.
+sync_exact_repo_workspace() {
+  local attempt last_attempt=3
+  for ((attempt=1; attempt<=last_attempt; attempt++)); do
+    if (
+      cd "$WORKSPACE"
+      "$REPO_BIN" sync -c -j4 --no-tags --prune --no-repo-verify
+    ); then
+      echo "repo-sync=ok attempt=$attempt"
+      return 0
+    fi
+    if [ "$attempt" -eq "$last_attempt" ]; then
+      echo "repo sync failed after $last_attempt attempts" >&2
+      return 1
+    fi
+    echo "repo sync failed attempt=$attempt; retrying same pinned manifest" >&2
+    sleep "$((attempt * 30))"
+  done
+}
+
+sync_exact_repo_workspace
 
 clone_exact() {
   local repo="$1" sha="$2" dst="$3"
