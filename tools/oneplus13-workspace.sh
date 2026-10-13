@@ -122,19 +122,37 @@ clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 materialize_external_vendor_links() {
   local kernel_root="$WORKSPACE/msm-kernel"
   local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
-  local link rel target source pass changed
+  local link rel target source source_parent mapped_dest nested pass changed
   local max_passes=12
+  local -A materialized_from=()
 
-  # Copied official vendor directories can themselves contain relative links.
-  # Re-scan to a fixed point; resolve every source against the pinned official
-  # modules+DT tree, not its relocated copy inside the Kleaf workspace.
+  # Official msm-kernel symlinks may point into the modules+DT vendor tree.
+  # That vendor tree itself has relative symlinks. After relocating a vendor
+  # directory to the kernel tree, its children MUST be resolved relative to
+  # the directory's ORIGINAL source, not relative to their new location.
   for ((pass=1; pass<=max_passes; pass++)); do
     changed=0
     while IFS= read -r -d '' link; do
       rel="${link#"$kernel_root"/}"
       target="$(readlink "$link")"
-      source="$(realpath -m "$original_kernel_root/$(dirname "$rel")/$target")"
+      source_parent="$original_kernel_root/$(dirname "$rel")"
+      mapped_dest=""
 
+      for dest in "${!materialized_from[@]}"; do
+        case "$link" in
+          "$dest"/*)
+            if [ "${#dest}" -gt "${#mapped_dest}" ]; then
+              mapped_dest="$dest"
+            fi
+            ;;
+        esac
+      done
+      if [ -n "$mapped_dest" ]; then
+        nested="${link#"$mapped_dest"/}"
+        source_parent="${materialized_from[$mapped_dest]}/$(dirname "$nested")"
+      fi
+
+      source="$(realpath -m "$source_parent/$target")"
       case "$source" in
         "$MODULES_STAGE"/vendor/*)
           [ -e "$source" ] || {
@@ -145,6 +163,7 @@ materialize_external_vendor_links() {
           if [ -d "$source" ]; then
             mkdir -p "$link"
             rsync -a --exclude '.git/' "$source/" "$link/"
+            materialized_from["$link"]="$source"
           else
             mkdir -p "$(dirname "$link")"
             cp -a "$source" "$link"
