@@ -1,0 +1,30 @@
+name: OnePlus 13 pinned repo sync retry test
+
+on:
+  push:
+    branches:
+      - fix/op13-oki-repo-sync-retry
+  pull_request:
+    branches:
+      - vendor/oneplus13-sm8750-a16
+    paths:
+      - 'tools/oneplus13-workspace.sh'
+      - 'tools/test-oneplus-repo-sync.sh'
+      - '.github/workflows/oneplus-repo-sync-retry.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync-retry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Bash syntax
+        run: |
+          bash -n tools/oneplus13-workspace.sh
+          bash -n tools/test-oneplus-repo-sync.sh
+      - name: Verify transient recovery and permanent failure
+        run: bash tools/test-oneplus-repo-sync.sh
