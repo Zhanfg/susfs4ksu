@@ -122,32 +122,46 @@ clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 materialize_external_vendor_links() {
   local kernel_root="$WORKSPACE/msm-kernel"
   local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
-  local link rel target source
+  local link rel target source pass changed
+  local max_passes=12
 
-  while IFS= read -r -d '' link; do
-    rel="${link#"$kernel_root"/}"
-    target="$(readlink "$link")"
+  # Copied official vendor directories can themselves contain relative links.
+  # Re-scan to a fixed point; resolve every source against the pinned official
+  # modules+DT tree, not its relocated copy inside the Kleaf workspace.
+  for ((pass=1; pass<=max_passes; pass++)); do
+    changed=0
+    while IFS= read -r -d '' link; do
+      rel="${link#"$kernel_root"/}"
+      target="$(readlink "$link")"
+      source="$(realpath -m "$original_kernel_root/$(dirname "$rel")/$target")"
 
-    # Resolve the link as it exists in the official Android source layout.
-    source="$(realpath -m "$original_kernel_root/$(dirname "$rel")/$target")"
-
-    case "$source" in
-      "$MODULES_STAGE"/vendor/*)
-        [ -e "$source" ] || {
-          echo "missing official symlink target for $rel: $source" >&2
-          return 1
-        }
-        rm -f "$link"
-        if [ -d "$source" ]; then
-          mkdir -p "$link"
-          rsync -a --exclude '.git/' "$source/" "$link/"
-        else
-          mkdir -p "$(dirname "$link")"
-          cp -a "$source" "$link"
-        fi
-        ;;
-    esac
-  done < <(find "$kernel_root" -type l -print0)
+      case "$source" in
+        "$MODULES_STAGE"/vendor/*)
+          [ -e "$source" ] || {
+            echo "missing official symlink target for $rel: $source" >&2
+            return 1
+          }
+          rm -f "$link"
+          if [ -d "$source" ]; then
+            mkdir -p "$link"
+            rsync -a --exclude '.git/' "$source/" "$link/"
+          else
+            mkdir -p "$(dirname "$link")"
+            cp -a "$source" "$link"
+          fi
+          changed=$((changed + 1))
+          ;;
+      esac
+    done < <(find "$kernel_root" -type l -print0)
+    echo "vendor-link-closure pass=$pass materialized=$changed"
+    if [ "$changed" -eq 0 ]; then
+      break
+    fi
+    if [ "$pass" -eq "$max_passes" ]; then
+      echo "vendor symlink closure exceeded $max_passes passes" >&2
+      return 1
+    fi
+  done
 }
 
 materialize_external_vendor_links
@@ -155,6 +169,11 @@ materialize_external_vendor_links
 # The first hard dependency exposed by sun_perf Kconfig and several WALT
 # includes must now be a real in-tree directory, not an external symlink.
 test -f "$WORKSPACE/msm-kernel/kernel/oplus_cpu/Kconfig"
+# This nested official link was missing in sun_perf Kleaf config generation.
+test -f "$WORKSPACE/msm-kernel/drivers/soc/oplus/storage/common/io_metrics/Kconfig" || {
+  echo "missing nested official OPlus storage/io_metrics Kconfig after materialization" >&2
+  exit 1
+}
 
 # Match OnePlus build_with_bazel.py / prepare_vendor.sh glue. Qualcomm's
 # msm-kernel rules intentionally load these extensions through //build.
