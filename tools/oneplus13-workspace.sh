@@ -140,7 +140,7 @@ clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 materialize_external_vendor_links() {
   local kernel_root="$WORKSPACE/msm-kernel"
   local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
-  local link rel target source source_parent mapped_dest nested pass changed
+  local link rel target source source_parent original_parent mapped_dest nested pass changed nested_vendor
   local max_passes=12
   local -A materialized_from=()
 
@@ -154,6 +154,18 @@ materialize_external_vendor_links() {
       rel="${link#"$kernel_root"/}"
       target="$(readlink "$link")"
       source_parent="$original_kernel_root/$(dirname "$rel")"
+      original_parent="$(realpath -m "$source_parent")"
+      nested_vendor=0
+      # The source checkout retains the original outer vendor links even
+      # after the working kernel copy has been materialized. Recover nested
+      # provenance from that immutable layout, including on repeated calls
+      # when the in-memory materialized_from map starts empty.
+      case "$original_parent" in
+        "$MODULES_STAGE"/vendor/*)
+          source_parent="$original_parent"
+          nested_vendor=1
+          ;;
+      esac
       mapped_dest=""
 
       for dest in "${!materialized_from[@]}"; do
@@ -174,7 +186,7 @@ materialize_external_vendor_links() {
       case "$source" in
         "$MODULES_STAGE"/vendor/*)
           if [ ! -e "$source" ]; then
-            if [ -n "$mapped_dest" ]; then
+            if [ -n "$mapped_dest" ] || [ "$nested_vendor" -eq 1 ]; then
               # The pinned official modules+DT tree contains nested links
               # whose targets do not exist there (for example, DFR's
               # soc/oplus/dfr/include -> ../../include). Preserve them:
