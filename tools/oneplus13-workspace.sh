@@ -202,6 +202,43 @@ materialize_external_vendor_links() {
 }
 
 materialize_external_vendor_links
+materialize_official_storage_metrics() {
+  local source="$MODULES_STAGE/vendor/oplus/kernel/storage/common/io_metrics"
+  local dest="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage/common/io_metrics"
+  local storage="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage"
+
+  # The pinned OnePlus OSS source has two levels of relocatable links:
+  # msm-kernel/.../storage -> vendor/.../storage_feature_in_module
+  # storage_feature_in_module/common/io_metrics -> ../../common/io_metrics
+  # After copying the outer directory into msm-kernel, the second link can
+  # point outside the relocated subtree. Materialize ONLY its official
+  # pinned target; never resolve it against the runner's ambient filesystem.
+  [ -f "$source/Kconfig" ] || {
+    echo "missing pinned OnePlus OSS storage/io_metrics source: $source/Kconfig" >&2
+    return 1
+  }
+  [ -d "$storage" ] && [ ! -L "$storage" ] || {
+    echo "OnePlus OSS storage root was not materialized: $storage" >&2
+    return 1
+  }
+  if [ ! -f "$dest/Kconfig" ]; then
+    if [ -L "$dest" ]; then
+      rm -f "$dest"
+    elif [ -e "$dest" ] && [ ! -d "$dest" ]; then
+      echo "unexpected non-directory at storage/io_metrics: $dest" >&2
+      return 1
+    fi
+    mkdir -p "$dest"
+    rsync -a --exclude '.git/' "$source/" "$dest/"
+    echo "materialized pinned OnePlus OSS storage/io_metrics from vendor source"
+  fi
+  test -f "$dest/Kconfig" || {
+    echo "storage/io_metrics Kconfig still missing after pinned materialization" >&2
+    return 1
+  }
+}
+
+materialize_official_storage_metrics
 
 # The first hard dependency exposed by sun_perf Kconfig and several WALT
 # includes must now be a real in-tree directory, not an external symlink.
