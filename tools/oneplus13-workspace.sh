@@ -173,10 +173,18 @@ materialize_external_vendor_links() {
       source="$(realpath -m "$source_parent/$target")"
       case "$source" in
         "$MODULES_STAGE"/vendor/*)
-          [ -e "$source" ] || {
-            echo "missing official symlink target for $rel: $source" >&2
+          if [ ! -e "$source" ]; then
+            if [ -n "$mapped_dest" ]; then
+              # The pinned official modules+DT tree contains nested links
+              # whose targets do not exist there (for example, DFR's
+              # soc/oplus/dfr/include -> ../../include). Preserve them:
+              # inventing a replacement target would modify vendor ABI.
+              echo "vendor-link-closure warning: unresolved pinned nested link $rel -> $source" >&2
+              continue
+            fi
+            echo "missing official top-level vendor symlink target for $rel: $source" >&2
             return 1
-          }
+          fi
           rm -f "$link"
           if [ -d "$source" ]; then
             mkdir -p "$link"
