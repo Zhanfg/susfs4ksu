@@ -1124,6 +1124,28 @@ index fbb6c44f..1b34903f 100644
                                                           struct av_decision *avd)
  {
      struct policydb *policydb;
+@@ -814,7 +473,6 @@ static void security_boundary_permission(struct policydb *policydb,
+     avd->allowed &= ~masked;
+ 
+     /* audit masked permissions */
+-    if (security_dump_masked_av_fn)
+-        security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
++    security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
+ }
+ 
+@@ -1129,11 +787,7 @@ static void security_compute_av_user_with_policy(struct selinux_policy *policy,
+         goto out;
+     }
+ 
+-    if (context_struct_compute_av_fn) {
+-        context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+-    } else {
+-        context_struct_compute_av(policydb, scontext, tcontext, tclass, avd, NULL);
+-    }
++    context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+ out:
+     return;
+ allow:
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 index f5cd7bf2..e784aba5 100644
 --- a/kernel/feature/sucompat.c
@@ -1598,7 +1620,7 @@ index d3f3ac49..1f1e91be 100644
  #include <linux/types.h>
  #include <linux/uaccess.h>
  #include <linux/uidgid.h>
-+#include <linux/susfs_def.h>
++#include <linux/susfs.h>
 +#include "selinux/selinux.h"
  
  #include "policy/allowlist.h"
@@ -1619,7 +1641,7 @@ index d3f3ac49..1f1e91be 100644
 +static inline void ksu_handle_extra_susfs_work(void)
  {
 -    // we rely on the fact that zygote always call setresuid(3) with same uids
-+    if (work_pending(&susfs_extra_works))
++    if (!susfs_is_sus_path_loop_refresh_needed() || work_pending(&susfs_extra_works))
 +        return;
  
 -    pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);

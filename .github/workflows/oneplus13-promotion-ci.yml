@@ -1,0 +1,122 @@
+name: OnePlus 13 promotion full build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - "next-6.6"
+    paths:
+      - "kernel_patches/**"
+      - "tools/oneplus13-workspace.sh"
+      - "tools/oneplus13-integrate.sh"
+      - "tools/susfs-patchctl.sh"
+      - ".github/workflows/oneplus13-promotion-ci.yml"
+
+concurrency:
+  group: oneplus13-promotion-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-sun-perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout SUSFS
+        uses: actions/checkout@v7
+
+      - name: Install workspace dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rsync
+
+      - name: Compose exact OnePlus 13 OSS workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/oneplus13-workspace.sh \
+            --workspace "$RUNNER_TEMP/oneplus13-kernel-platform" \
+            --mode prepare
+
+      - name: Integrate pinned KernelSU and SUSFS
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/oneplus13-integrate.sh \
+            --workspace "$RUNNER_TEMP/oneplus13-kernel-platform"
+
+      - name: Build 4K sun_perf distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          cd "$ws"
+
+          ./tools/bazel build \
+            --defconfig_fragment=//common:susfs_defconfig \
+            //msm-kernel:sun_perf_dist
+
+          dist="$ws/out/msm-kernel-sun-perf/dist"
+          test -d "$dist"
+          test -s "$dist/Image"
+          (
+            cd "$dist"
+            sha256sum Image > SHA256SUMS
+            find . -maxdepth 1 -type f -printf '%f\n' | sort > ARTIFACTS.txt
+          )
+
+      - name: Upload 4K OnePlus distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneplus13-sun-perf-susfs-${{ github.sha }}
+          path: ${{ runner.temp }}/oneplus13-kernel-platform/out/msm-kernel-sun-perf/dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Build 16K sun16k_perf distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          cd "$ws"
+
+          ./tools/bazel build \
+            --defconfig_fragment=//common:susfs_defconfig \
+            //msm-kernel:sun16k_perf_dist
+
+          dist="$ws/out/msm-kernel-sun-perf/dist16k"
+          test -d "$dist"
+          test -s "$dist/Image"
+          (
+            cd "$dist"
+            sha256sum Image > SHA256SUMS
+            find . -maxdepth 1 -type f -printf '%f\n' | sort > ARTIFACTS.txt
+          )
+
+      - name: Upload 16K OnePlus distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: oneplus13-sun16k-perf-susfs-${{ github.sha }}
+          path: ${{ runner.temp }}/oneplus13-kernel-platform/out/msm-kernel-sun-perf/dist16k/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Summarize promotion build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ws="$RUNNER_TEMP/oneplus13-kernel-platform"
+          {
+            echo "### OnePlus 13 SUSFS promotion build"
+            echo "- 4K: `//msm-kernel:sun_perf_dist`"
+            echo "- 16K: `//msm-kernel:sun16k_perf_dist`"
+            echo "- SUSFS config: `//common:susfs_defconfig`"
+            echo "- 4K Image: `$(sha256sum "$ws/out/msm-kernel-sun-perf/dist/Image" | awk '{print $1}')`"
+            echo "- 16K Image: `$(sha256sum "$ws/out/msm-kernel-sun-perf/dist16k/Image" | awk '{print $1}')`"
+          } >> "$GITHUB_STEP_SUMMARY"

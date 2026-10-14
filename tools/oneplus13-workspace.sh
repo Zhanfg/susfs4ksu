@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="$ROOT_DIR/kernel_patches/patchset.json"
+WORKSPACE=""
+MODE="prepare"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bash tools/oneplus13-workspace.sh --workspace PATH [--mode prepare|query]
+
+Builds a public, reproducible OnePlus 13 / SM8750 kernel_platform workspace:
+1. Google public common-android15-6.6 manifest supplies Kleaf/prebuilts.
+2. OnePlus modules+DT OSS overlays Qualcomm/OPlus projects and build glue.
+3. Exact OnePlus common and msm-kernel commits replace the generic trees.
+
+The query mode additionally verifies //msm-kernel:sun_perf and
+//msm-kernel:sun_perf_dist resolve in the composed workspace.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --manifest) MANIFEST="$2"; shift 2 ;;
+    --mode) MODE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$WORKSPACE" ] || { echo "--workspace is required" >&2; exit 2; }
+case "$MODE" in prepare|query) ;; *) echo "invalid --mode: $MODE" >&2; exit 2 ;; esac
+
+command -v python3 >/dev/null
+command -v git >/dev/null
+command -v rsync >/dev/null
+
+eval "$(
+python3 - "$MANIFEST" <<'PY'
+import json, shlex, sys
+d=json.load(open(sys.argv[1], encoding="utf-8"))
+def e(k,v): print(f"{k}={shlex.quote(str(v))}")
+e("COMMON_REPO", d["kernel"]["repository"])
+e("COMMON_SHA", d["kernel"]["baseline_commit"])
+e("VENDOR_REPO", d["vendor_kernel"]["repository"])
+e("VENDOR_SHA", d["vendor_kernel"]["baseline_commit"])
+e("MODULES_REPO", d["modules_and_devicetree"]["repository"])
+e("MODULES_SHA", d["modules_and_devicetree"]["baseline_commit"])
+PY
+)"
+
+REPO_BIN="$WORKSPACE/.repo-bin/repo"
+MODULES_STAGE="$WORKSPACE/.oneplus-modules"
+
+mkdir -p "$WORKSPACE/.repo-bin"
+if [ ! -x "$REPO_BIN" ]; then
+  curl --retry 3 --retry-all-errors -fsSL \
+    https://storage.googleapis.com/git-repo-downloads/repo \
+    -o "$REPO_BIN"
+  chmod +x "$REPO_BIN"
+fi
+
+if [ ! -d "$WORKSPACE/.repo" ]; then
+  (
+    cd "$WORKSPACE"
+    "$REPO_BIN" init \
+      -u https://android.googlesource.com/kernel/manifest \
+      -b common-android15-6.6 \
+      --depth=1 \
+      --no-repo-verify
+  )
+fi
+
+# Transient 502/503 failures on android.googlesource.com are common during
+# large multi-project syncs. Preserve successful downloads and retry only the
+# sync stage. No source revision changes or unverified mirror fallbacks.
+sync_exact_repo_workspace() {
+  local attempt last_attempt=3
+  for ((attempt=1; attempt<=last_attempt; attempt++)); do
+    if (
+      cd "$WORKSPACE"
+      "$REPO_BIN" sync -c -j4 --no-tags --prune --no-repo-verify
+    ); then
+      echo "repo-sync=ok attempt=$attempt"
+      return 0
+    fi
+    if [ "$attempt" -eq "$last_attempt" ]; then
+      echo "repo sync failed after $last_attempt attempts" >&2
+      return 1
+    fi
+    echo "repo sync failed attempt=$attempt; retrying same pinned manifest" >&2
+    sleep "$((attempt * 30))"
+  done
+}
+
+sync_exact_repo_workspace
+
+clone_exact() {
+  local repo="$1" sha="$2" dst="$3"
+  rm -rf "$dst"
+  git init -q "$dst"
+  git -C "$dst" remote add origin "$repo"
+  git -C "$dst" fetch --depth=1 origin "$sha"
+  git -C "$dst" checkout --detach FETCH_HEAD
+  test "$(git -C "$dst" rev-parse HEAD)" = "$sha"
+}
+
+clone_exact "$MODULES_REPO" "$MODULES_SHA" "$MODULES_STAGE"
+
+# Overlay OnePlus/QCOM build glue and external vendor projects while preserving
+# public-manifest prebuilts that are intentionally absent from the OSS snapshot.
+rsync -a \
+  --exclude '.git/' \
+  "$MODULES_STAGE/kernel_platform/" "$WORKSPACE/"
+
+for top in vendor; do
+  if [ -d "$MODULES_STAGE/$top" ]; then
+    mkdir -p "$WORKSPACE/$top"
+    rsync -a --exclude '.git/' \
+      "$MODULES_STAGE/$top/" "$WORKSPACE/$top/"
+  fi
+done
+
+clone_exact "$COMMON_REPO" "$COMMON_SHA" "$WORKSPACE/common"
+clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
+
+# OnePlus' msm-kernel repository intentionally contains symlinks such as:
+#   kernel/oplus_cpu -> ../../../vendor/oplus/kernel/cpu
+# In an Android source checkout those resolve outside kernel_platform, into
+# ANDROID_BUILD_TOP/vendor. A standalone public Kleaf workspace has no such
+# parent tree and Bazel sandboxes would preserve them as dangling links.
+#
+# Materialize only the exact external targets referenced by the pinned vendor
+# kernel. Resolve each link against the original modules+DT Android-top layout;
+# internal msm-kernel links are left untouched. This keeps the workspace
+# self-contained without copying the complete vendor tree.
+materialize_external_vendor_links() {
+  local kernel_root="$WORKSPACE/msm-kernel"
+  local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
+  local link rel target source source_parent original_parent mapped_dest nested pass changed nested_vendor
+  local max_passes=12
+  local -A materialized_from=()
+
+  # Official msm-kernel symlinks may point into the modules+DT vendor tree.
+  # That vendor tree itself has relative symlinks. After relocating a vendor
+  # directory to the kernel tree, its children MUST be resolved relative to
+  # the directory's ORIGINAL source, not relative to their new location.
+  for ((pass=1; pass<=max_passes; pass++)); do
+    changed=0
+    while IFS= read -r -d '' link; do
+      rel="${link#"$kernel_root"/}"
+      target="$(readlink "$link")"
+      source_parent="$original_kernel_root/$(dirname "$rel")"
+      original_parent="$(realpath -m "$source_parent")"
+      nested_vendor=0
+      # The source checkout retains the original outer vendor links even
+      # after the working kernel copy has been materialized. Recover nested
+      # provenance from that immutable layout, including on repeated calls
+      # when the in-memory materialized_from map starts empty.
+      case "$original_parent" in
+        "$MODULES_STAGE"/vendor/*)
+          source_parent="$original_parent"
+          nested_vendor=1
+          ;;
+      esac
+      mapped_dest=""
+
+      for dest in "${!materialized_from[@]}"; do
+        case "$link" in
+          "$dest"/*)
+            if [ "${#dest}" -gt "${#mapped_dest}" ]; then
+              mapped_dest="$dest"
+            fi
+            ;;
+        esac
+      done
+      if [ -n "$mapped_dest" ]; then
+        nested="${link#"$mapped_dest"/}"
+        source_parent="${materialized_from[$mapped_dest]}/$(dirname "$nested")"
+      fi
+
+      source="$(realpath -m "$source_parent/$target")"
+      case "$source" in
+        "$MODULES_STAGE"/vendor/*)
+          if [ ! -e "$source" ]; then
+            if [ -n "$mapped_dest" ] || [ "$nested_vendor" -eq 1 ]; then
+              # The pinned official modules+DT tree contains nested links
+              # whose targets do not exist there (for example, DFR's
+              # soc/oplus/dfr/include -> ../../include). Preserve them:
+              # inventing a replacement target would modify vendor ABI.
+              echo "vendor-link-closure warning: unresolved pinned nested link $rel -> $source" >&2
+              continue
+            fi
+            echo "missing official top-level vendor symlink target for $rel: $source" >&2
+            return 1
+          fi
+          rm -f "$link"
+          if [ -d "$source" ]; then
+            mkdir -p "$link"
+            rsync -a --exclude '.git/' "$source/" "$link/"
+            materialized_from["$link"]="$source"
+          else
+            mkdir -p "$(dirname "$link")"
+            cp -a "$source" "$link"
+          fi
+          changed=$((changed + 1))
+          ;;
+      esac
+    done < <(find "$kernel_root" -type l -print0)
+    echo "vendor-link-closure pass=$pass materialized=$changed"
+    if [ "$changed" -eq 0 ]; then
+      break
+    fi
+    if [ "$pass" -eq "$max_passes" ]; then
+      echo "vendor symlink closure exceeded $max_passes passes" >&2
+      return 1
+    fi
+  done
+}
+
+materialize_external_vendor_links
+materialize_official_storage_metrics() {
+  local source="$MODULES_STAGE/vendor/oplus/kernel/storage/common/io_metrics"
+  local dest="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage/common/io_metrics"
+  local storage="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage"
+
+  # The pinned OnePlus OSS source has two levels of relocatable links:
+  # msm-kernel/.../storage -> vendor/.../storage_feature_in_module
+  # storage_feature_in_module/common/io_metrics -> ../../common/io_metrics
+  # After copying the outer directory into msm-kernel, the second link can
+  # point outside the relocated subtree. Materialize ONLY its official
+  # pinned target; never resolve it against the runner's ambient filesystem.
+  [ -f "$source/Kconfig" ] || {
+    echo "missing pinned OnePlus OSS storage/io_metrics source: $source/Kconfig" >&2
+    return 1
+  }
+  [ -d "$storage" ] && [ ! -L "$storage" ] || {
+    echo "OnePlus OSS storage root was not materialized: $storage" >&2
+    return 1
+  }
+  if [ ! -f "$dest/Kconfig" ]; then
+    if [ -L "$dest" ]; then
+      rm -f "$dest"
+    elif [ -e "$dest" ] && [ ! -d "$dest" ]; then
+      echo "unexpected non-directory at storage/io_metrics: $dest" >&2
+      return 1
+    fi
+    mkdir -p "$dest"
+    rsync -a --exclude '.git/' "$source/" "$dest/"
+    echo "materialized pinned OnePlus OSS storage/io_metrics from vendor source"
+  fi
+  test -f "$dest/Kconfig" || {
+    echo "storage/io_metrics Kconfig still missing after pinned materialization" >&2
+    return 1
+  }
+}
+
+materialize_official_storage_metrics
+
+# The first hard dependency exposed by sun_perf Kconfig and several WALT
+# includes must now be a real in-tree directory, not an external symlink.
+test -f "$WORKSPACE/msm-kernel/kernel/oplus_cpu/Kconfig"
+# This nested official link was missing in sun_perf Kleaf config generation.
+test -f "$WORKSPACE/msm-kernel/drivers/soc/oplus/storage/common/io_metrics/Kconfig" || {
+  echo "missing nested official OPlus storage/io_metrics Kconfig after materialization" >&2
+  exit 1
+}
+
+# Match OnePlus build_with_bazel.py / prepare_vendor.sh glue. Qualcomm's
+# msm-kernel rules intentionally load these extensions through //build.
+mkdir -p "$WORKSPACE/build"
+ln -sfn ../msm-kernel/msm_kernel_extensions.bzl \
+  "$WORKSPACE/build/msm_kernel_extensions.bzl"
+if [ -f "$WORKSPACE/bootable/bootloader/edk2/abl_extensions.bzl" ]; then
+  ln -sfn ../bootable/bootloader/edk2/abl_extensions.bzl \
+    "$WORKSPACE/build/abl_extensions.bzl"
+fi
+
+# The OnePlus msm-kernel BUILD graph imports OPlus Bazel helpers from the
+# modules+DT overlay. Verify the structural contract before invoking Bazel.
+for required in \
+  "$WORKSPACE/tools/bazel" \
+  "$WORKSPACE/build_with_bazel.py" \
+  "$WORKSPACE/build/android/prepare_vendor.sh" \
+  "$WORKSPACE/build/msm_kernel_extensions.bzl" \
+  "$WORKSPACE/oplus/bazel/oplus_modules_define.bzl" \
+  "$WORKSPACE/oplus/config/modules.ext.oplus" \
+  "$WORKSPACE/msm-kernel/sun.bzl" \
+  "$WORKSPACE/common/Makefile"; do
+  [ -e "$required" ] || { echo "missing workspace input: $required" >&2; exit 1; }
+done
+
+actual="$(
+  awk -F= '
+    /^VERSION[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); v=$2}
+    /^PATCHLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); p=$2}
+    /^SUBLEVEL[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); s=$2}
+    END {print v "." p "." s}
+  ' "$WORKSPACE/common/Makefile"
+)"
+[ "$actual" = "6.6.118" ] || {
+  echo "unexpected OnePlus common version: $actual" >&2
+  exit 1
+}
+
+if [ "$MODE" = "query" ]; then
+  (
+    cd "$WORKSPACE"
+    ./tools/bazel query //msm-kernel:sun_perf
+    ./tools/bazel query //msm-kernel:sun_perf_dist
+    ./tools/bazel query //msm-kernel:sun16k_perf
+  )
+fi
+
+cat <<EOF
+workspace=$WORKSPACE
+common_sha=$COMMON_SHA
+vendor_sha=$VENDOR_SHA
+modules_sha=$MODULES_SHA
+kernel_version=$actual
+mode=$MODE
+EOF

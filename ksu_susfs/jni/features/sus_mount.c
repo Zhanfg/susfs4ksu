@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "sus_mount.h"
 
-#define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
 
 struct st_susfs_hide_sus_mnts_for_non_su_procs {
 	bool                    enabled;
@@ -46,7 +46,7 @@ int hide_sus_mnts_for_non_su_procs(int argc, char *argv[]) {
 	}
 	info.enabled = atoi(argv[2]);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS, &info);
+	susfs_control_call(CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS);
 	return info.err;
 }

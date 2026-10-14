@@ -7,10 +7,10 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <susfs_defs.h>
+#include <susfs_control.h>
 #include <susfs_utils.h>
 #include "sus_map.h"
 
-#define CMD_SUSFS_ADD_SUS_MAP 0x60020
 
 struct st_susfs_sus_map {
 	char                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
@@ -49,7 +49,7 @@ int add_sus_map(int argc, char *argv[]) {
 
 	strncpy(info.target_pathname, argv[2], SUSFS_MAX_LEN_PATHNAME-1);
 	info.err = ERR_CMD_NOT_SUPPORTED;
-	syscall(SYS_reboot, KSU_INSTALL_MAGIC1, SUSFS_MAGIC, CMD_SUSFS_ADD_SUS_MAP, &info);
+	susfs_control_call(CMD_SUSFS_ADD_SUS_MAP, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_MAP);
 	return info.err;
 }

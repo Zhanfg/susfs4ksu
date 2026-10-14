@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "susfs_version": "v2.3.0",
+  "lane": "oneplus13-sm8750-a16-6.6",
+  "devices": [
+    "OnePlus 13 CPH2649",
+    "OnePlus 13 CPH2653",
+    "OnePlus 13 PJZ110"
+  ],
+  "kernel": {
+    "repository": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750.git",
+    "baseline_ref": "oneplus/sm8750_b_16.0.0_oneplus_13",
+    "baseline_commit": "e1b346b6b4f4096eb342ae3684838a942fd6f6c4",
+    "baseline_version": "6.6.118",
+    "major_minor": "6.6",
+    "qcom_base": "android15-6.6-2026-01_r22"
+  },
+  "vendor_kernel": {
+    "repository": "https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750.git",
+    "baseline_ref": "oneplus/sm8750_b_16.0.0_oneplus_13",
+    "baseline_commit": "6028f47faddaa27700f8dd3a1d83906ea8f27170"
+  },
+  "modules_and_devicetree": {
+    "repository": "https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8750.git",
+    "baseline_ref": "oneplus/sm8750_b_16.0.0_oneplus_13",
+    "baseline_commit": "d50b305f7da9e14715a25120a4ac7b1a4b8b97c3"
+  },
+  "kernelsu": {
+    "repository": "https://github.com/tiann/KernelSU.git",
+    "baseline_commit": "623eba3e092b911a3a7389b7d87622a5835d2f3a"
+  },
+  "patches": {
+    "kernel": "kernel_patches/50_add_susfs_in_gki-android15-6.6.patch",
+    "kernelsu": "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+  },
+  "oneplus_features": {
+    "fuse_bpf": true,
+    "fuse_passthrough": true,
+    "vendor_modules_external": true,
+    "fuse_bpf_backing_inode": true
+  },
+  "source_sync": "OnePlus 13 Android 16.0.9.401 OSS sync",
+  "kmi": {
+    "vendor_symbol_list": "android/abi_gki_aarch64_oplus",
+    "vendor_symbol_list_blob": "63af968790ce4913be329d169f3a383b0ffd6afe"
+  }
+}
