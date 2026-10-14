@@ -140,7 +140,7 @@ clone_exact "$VENDOR_REPO" "$VENDOR_SHA" "$WORKSPACE/msm-kernel"
 materialize_external_vendor_links() {
   local kernel_root="$WORKSPACE/msm-kernel"
   local original_kernel_root="$MODULES_STAGE/kernel_platform/msm-kernel"
-  local link rel target source source_parent mapped_dest nested pass changed
+  local link rel target source source_parent original_parent mapped_dest nested pass changed nested_vendor
   local max_passes=12
   local -A materialized_from=()
 
@@ -154,6 +154,18 @@ materialize_external_vendor_links() {
       rel="${link#"$kernel_root"/}"
       target="$(readlink "$link")"
       source_parent="$original_kernel_root/$(dirname "$rel")"
+      original_parent="$(realpath -m "$source_parent")"
+      nested_vendor=0
+      # The source checkout retains the original outer vendor links even
+      # after the working kernel copy has been materialized. Recover nested
+      # provenance from that immutable layout, including on repeated calls
+      # when the in-memory materialized_from map starts empty.
+      case "$original_parent" in
+        "$MODULES_STAGE"/vendor/*)
+          source_parent="$original_parent"
+          nested_vendor=1
+          ;;
+      esac
       mapped_dest=""
 
       for dest in "${!materialized_from[@]}"; do
@@ -173,10 +185,18 @@ materialize_external_vendor_links() {
       source="$(realpath -m "$source_parent/$target")"
       case "$source" in
         "$MODULES_STAGE"/vendor/*)
-          [ -e "$source" ] || {
-            echo "missing official symlink target for $rel: $source" >&2
+          if [ ! -e "$source" ]; then
+            if [ -n "$mapped_dest" ] || [ "$nested_vendor" -eq 1 ]; then
+              # The pinned official modules+DT tree contains nested links
+              # whose targets do not exist there (for example, DFR's
+              # soc/oplus/dfr/include -> ../../include). Preserve them:
+              # inventing a replacement target would modify vendor ABI.
+              echo "vendor-link-closure warning: unresolved pinned nested link $rel -> $source" >&2
+              continue
+            fi
+            echo "missing official top-level vendor symlink target for $rel: $source" >&2
             return 1
-          }
+          fi
           rm -f "$link"
           if [ -d "$source" ]; then
             mkdir -p "$link"
@@ -202,6 +222,43 @@ materialize_external_vendor_links() {
 }
 
 materialize_external_vendor_links
+materialize_official_storage_metrics() {
+  local source="$MODULES_STAGE/vendor/oplus/kernel/storage/common/io_metrics"
+  local dest="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage/common/io_metrics"
+  local storage="$WORKSPACE/msm-kernel/drivers/soc/oplus/storage"
+
+  # The pinned OnePlus OSS source has two levels of relocatable links:
+  # msm-kernel/.../storage -> vendor/.../storage_feature_in_module
+  # storage_feature_in_module/common/io_metrics -> ../../common/io_metrics
+  # After copying the outer directory into msm-kernel, the second link can
+  # point outside the relocated subtree. Materialize ONLY its official
+  # pinned target; never resolve it against the runner's ambient filesystem.
+  [ -f "$source/Kconfig" ] || {
+    echo "missing pinned OnePlus OSS storage/io_metrics source: $source/Kconfig" >&2
+    return 1
+  }
+  [ -d "$storage" ] && [ ! -L "$storage" ] || {
+    echo "OnePlus OSS storage root was not materialized: $storage" >&2
+    return 1
+  }
+  if [ ! -f "$dest/Kconfig" ]; then
+    if [ -L "$dest" ]; then
+      rm -f "$dest"
+    elif [ -e "$dest" ] && [ ! -d "$dest" ]; then
+      echo "unexpected non-directory at storage/io_metrics: $dest" >&2
+      return 1
+    fi
+    mkdir -p "$dest"
+    rsync -a --exclude '.git/' "$source/" "$dest/"
+    echo "materialized pinned OnePlus OSS storage/io_metrics from vendor source"
+  fi
+  test -f "$dest/Kconfig" || {
+    echo "storage/io_metrics Kconfig still missing after pinned materialization" >&2
+    return 1
+  }
+}
+
+materialize_official_storage_metrics
 
 # The first hard dependency exposed by sun_perf Kconfig and several WALT
 # includes must now be a real in-tree directory, not an external symlink.
