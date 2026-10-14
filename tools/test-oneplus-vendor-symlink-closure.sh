@@ -39,4 +39,22 @@ test ! -L "$kernel/drivers/soc/oplus/storage/common/io_metrics"
 # A subsequent execution should be idempotent and preserve installed sources.
 materialize_external_vendor_links
 test -f "$kconfig"
-echo "PASS: nested OnePlus vendor symlinks resolved; repeated closure is idempotent"
+
+# Reproduce the real OnePlus OSS build fault: the copied storage tree still
+# contains its original nested relative link, which is dangling after
+# relocation. The pinned-source fallback must materialize a real directory.
+rm -rf "$kernel/drivers/soc/oplus/storage/common/io_metrics"
+ln -s ../../common/io_metrics \
+  "$kernel/drivers/soc/oplus/storage/common/io_metrics"
+test ! -f "$kconfig"
+fix="$(sed -n '/^materialize_official_storage_metrics() {/,/^}$/p' \
+  "$root/tools/oneplus13-workspace.sh")"
+[ -n "$fix" ]
+eval "$fix"
+materialize_official_storage_metrics
+test -f "$kconfig"
+test ! -L "$kernel/drivers/soc/oplus/storage/common/io_metrics"
+grep -q 'OPLUS_FEATURE_STORAGE_IO_METRICS_QCOM' "$kconfig"
+materialize_official_storage_metrics
+test -f "$kconfig"
+echo "PASS: nested OnePlus vendor symlinks and pinned Kconfig recovery verified"
