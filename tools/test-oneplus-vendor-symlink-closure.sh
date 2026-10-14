@@ -17,6 +17,11 @@ ln -s ../../../../../vendor/oplus/kernel/storage/storage_feature_in_module \
   "$original/drivers/soc/oplus/storage"
 ln -s ../../common/io_metrics \
   "$vendor/storage_feature_in_module/common/io_metrics"
+# Official OPlus trees also contain dangling relative links in copied vendor
+# subtrees; closure must not invent a replacement target for these.
+mkdir -p "$vendor/storage_feature_in_module/soc/oplus/dfr"
+ln -s ../../include/ \
+  "$vendor/storage_feature_in_module/soc/oplus/dfr/include"
 printf 'config OPLUS_FEATURE_STORAGE_IO_METRICS_QCOM\n' > \
   "$vendor/common/io_metrics/Kconfig"
 ln -s ../../../../../vendor/oplus/kernel/storage/storage_feature_in_module \
@@ -35,6 +40,7 @@ grep -q 'OPLUS_FEATURE_STORAGE_IO_METRICS_QCOM' "$kconfig"
 test -d "$kernel/drivers/soc/oplus/storage"
 test ! -L "$kernel/drivers/soc/oplus/storage"
 test ! -L "$kernel/drivers/soc/oplus/storage/common/io_metrics"
+test -L "$kernel/drivers/soc/oplus/storage/soc/oplus/dfr/include"
 
 # A subsequent execution should be idempotent and preserve installed sources.
 materialize_external_vendor_links
