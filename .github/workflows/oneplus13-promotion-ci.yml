@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - "next-6.6"
+      - "vendor/oneplus13-sm8750-a16"
     paths:
       - "kernel_patches/**"
       - "tools/oneplus13-workspace.sh"
