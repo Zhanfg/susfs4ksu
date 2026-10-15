@@ -1,0 +1,35 @@
+name: OnePlus 13 vendor source patch preflight
+on:
+  pull_request:
+    branches:
+      - vendor/oneplus13-sm8750-a16
+    paths:
+      - '.github/workflows/oneplus13-msm-patch-preflight.yml'
+      - 'tools/oneplus13-integrate.sh'
+      - 'kernel_patches/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-kconfig-and-susfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact vendor kernel is compatible with SUSFS patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          vendor="$RUNNER_TEMP/msm-kernel"
+          sha="$(python3 -c 'import json; print(json.load(open("kernel_patches/patchset.json"))["vendor_kernel"]["baseline_commit"])')"
+          repo="$(python3 -c 'import json; print(json.load(open("kernel_patches/patchset.json"))["vendor_kernel"]["repository"])')"
+          git init -q "$vendor"
+          git -C "$vendor" remote add origin "$repo"
+          git -C "$vendor" fetch --depth=1 origin "$sha"
+          git -C "$vendor" checkout -q --detach FETCH_HEAD
+          test "$(git -C "$vendor" rev-parse HEAD)" = "$sha"
+          test -f "$vendor/Kconfig"
+          grep -q '^source "drivers/Kconfig"$' "$vendor/Kconfig"
+          git -C "$vendor" apply --check "$GITHUB_WORKSPACE/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch"

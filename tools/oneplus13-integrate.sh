@@ -60,12 +60,21 @@ git -C "$KSU_TREE" fetch --depth=1 origin "$KSU_SHA"
 git -C "$KSU_TREE" checkout --detach FETCH_HEAD
 test "$(git -C "$KSU_TREE" rev-parse HEAD)" = "$KSU_SHA"
 
-bash "$ROOT_DIR/tools/susfs-patchctl.sh" apply   --manifest "$MANIFEST"   --require-direct   --kernel-tree "$WORKSPACE/common"   --ksu-tree "$KSU_TREE"
+# The OnePlus sun_perf rule is a mixed build: //common provides the base
+# Image, but //msm-kernel generates an independent module/Kconfig tree.
+# Kleaf --defconfig_fragment applies to both. Keep hooks, source and Kconfig
+# identical in both trees; do not hide missing config options.
+for kernel_tree in "$WORKSPACE/common" "$WORKSPACE/msm-kernel"; do
+  bash "$ROOT_DIR/tools/susfs-patchctl.sh" apply \
+    --manifest "$MANIFEST" \
+    --require-direct \
+    --kernel-tree "$kernel_tree" \
+    --ksu-tree "$KSU_TREE"
 
-rm -rf "$WORKSPACE/common/drivers/kernelsu"
-cp -a "$KSU_TREE/kernel" "$WORKSPACE/common/drivers/kernelsu"
+  rm -rf "$kernel_tree/drivers/kernelsu"
+  cp -a "$KSU_TREE/kernel" "$kernel_tree/drivers/kernelsu"
 
-python3 - "$WORKSPACE/common/drivers/Makefile" "$WORKSPACE/common/drivers/Kconfig" <<'PY'
+  python3 - "$kernel_tree/drivers/Makefile" "$kernel_tree/drivers/Kconfig" <<'PY'
 from pathlib import Path
 import sys
 
@@ -90,6 +99,15 @@ if source not in k:
     k = k[:pos] + f"\n{source}\n" + k[pos:]
     kconfig.write_text(k, encoding="utf-8")
 PY
+
+  grep -q 'obj-$(CONFIG_KSU) += kernelsu/' "$kernel_tree/drivers/Makefile"
+  grep -q 'source "drivers/kernelsu/Kconfig"' "$kernel_tree/drivers/Kconfig"
+  grep -q '^config KSU$' "$kernel_tree/drivers/kernelsu/Kconfig"
+  grep -q '^config KSU_SUSFS$' "$kernel_tree/drivers/kernelsu/Kconfig"
+  test -s "$kernel_tree/fs/susfs.c"
+  test -s "$kernel_tree/include/linux/susfs.h"
+  echo "susfs-integrated-root=$kernel_tree"
+done
 
 cat > "$WORKSPACE/common/susfs_defconfig" <<'EOF'
 CONFIG_KSU=y
