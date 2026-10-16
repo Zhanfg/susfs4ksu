@@ -1,0 +1,30 @@
+name: OnePlus 6.6 SUS_PATH pathname boundary
+
+on:
+  push:
+    branches:
+      - fix/op13-sus-path-boundary-6.6
+  pull_request:
+    branches:
+      - vendor/oneplus13-sm8750-a16
+    paths:
+      - 'kernel_patches/fs/susfs.c'
+      - 'tests/test_sus_path_boundary.py'
+      - '.github/workflows/sus-path-boundary-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pathname-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test fixed-size kernel SUS_PATH rule handling
+        run: python3 tests/test_sus_path_boundary.py
+      - name: Verify static errno side-channel regression remains present
+        run: python3 tests/check_sus_path_errno.py
+      - name: Validation scope
+        run: echo 'Source and path-boundary model only; full OnePlus kernel build and on-device VFS tests remain mandatory.'

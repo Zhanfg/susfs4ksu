@@ -36,6 +36,18 @@ static void print_help(void){
 	sus_path_print_help();
 }
 
+static int copy_full_sus_path(char dest[SUSFS_MAX_LEN_PATHNAME], const char *src)
+{
+	size_t length = strlen(src);
+
+	if (!length)
+		return -EINVAL;
+	if (length >= SUSFS_MAX_LEN_PATHNAME)
+		return -ENAMETOOLONG;
+	memcpy(dest, src, length + 1);
+	return 0;
+}
+
 int add_sus_path(int argc, char *argv[]) {
 	struct st_susfs_sus_path info = {0};
 	char resolved_pathname[PATH_MAX];
@@ -55,7 +67,9 @@ int add_sus_path(int argc, char *argv[]) {
 		return errno;
 	}
 
-	strncpy(info.target_pathname, resolved_pathname, SUSFS_MAX_LEN_PATHNAME-1);
+	int path_status = copy_full_sus_path(info.target_pathname, resolved_pathname);
+	if (path_status)
+		return path_status;
 	info.err = ERR_CMD_NOT_SUPPORTED;
 	susfs_control_call(CMD_SUSFS_ADD_SUS_PATH, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_PATH);
@@ -75,7 +89,9 @@ int add_sus_path_loop(int argc, char *argv[]) {
 		return -EINVAL;
 	}
 
-	strncpy(info.target_pathname, argv[2], SUSFS_MAX_LEN_PATHNAME-1);
+	int path_status = copy_full_sus_path(info.target_pathname, argv[2]);
+	if (path_status)
+		return path_status;
 	info.err = ERR_CMD_NOT_SUPPORTED;
 	susfs_control_call(CMD_SUSFS_ADD_SUS_PATH_LOOP, &info);
 	PRT_MSG_IF_CMD_NOT_SUPPORTED(info.err, CMD_SUSFS_ADD_SUS_PATH_LOOP);

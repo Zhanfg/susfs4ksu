@@ -267,9 +267,19 @@ void susfs_add_sus_path(void __user **user_info) {
 	struct path path;
 	struct inode *inode = NULL;
 	struct fuse_inode *fi = NULL;
+	size_t pathname_len;
 
 	if (copy_from_user(&info, (struct st_susfs_sus_path __user*)*user_info, sizeof(info))) {
 		info.err = -EFAULT;
+		goto out_copy_to_user;
+	}
+
+	/* The userspace buffer is fixed-size; never pass an unterminated
+	 * pathname to VFS or log it as a string. 255 bytes is valid.
+	 */
+	pathname_len = strnlen(info.target_pathname, sizeof(info.target_pathname));
+	if (!pathname_len || pathname_len == sizeof(info.target_pathname)) {
+		info.err = pathname_len ? -ENAMETOOLONG : -EINVAL;
 		goto out_copy_to_user;
 	}
 
@@ -323,15 +333,19 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 	struct st_susfs_sus_path_list *new_list = NULL;
 	struct st_susfs_sus_path_list *cursor = NULL;
 	struct st_susfs_sus_path info = {0};
+	size_t pathname_len;
 
 	if (copy_from_user(&info, (struct st_susfs_sus_path __user*)*user_info, sizeof(info))) {
 		info.err = -EFAULT;
 		goto out_copy_to_user;
 	}
 
-	if (*info.target_pathname == '\0') {
-		SUSFS_LOGE("target_pathname cannot be empty\n");
-		info.err = -EINVAL;
+	pathname_len = strnlen(info.target_pathname, sizeof(info.target_pathname));
+	if (!pathname_len || pathname_len == sizeof(info.target_pathname)) {
+		/* Do not silently truncate a dynamic path, and do not strcmp()
+		 * or log an unterminated userspace string.
+		 */
+		info.err = pathname_len ? -ENAMETOOLONG : -EINVAL;
 		goto out_copy_to_user;
 	}
 
@@ -342,7 +356,7 @@ void susfs_add_sus_path_loop(void __user **user_info) {
 	}
 	new_list = &new_rule->entry;
 	atomic_set(&new_rule->refresh_needed, 1);
-	strscpy(new_list->target_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
+	memcpy(new_list->target_pathname, info.target_pathname, pathname_len + 1);
 	INIT_LIST_HEAD(&new_list->list);
 	mutex_lock(&susfs_mutex_lock_sus_path);
 	list_for_each_entry(cursor, &LH_SUS_PATH_LOOP, list) {
