@@ -1712,21 +1712,27 @@ index 7a2ff6157..72d14c8e9 100644
  }
  
 diff --git a/fs/readdir.c b/fs/readdir.c
-index 9c53edb60..7d12eaa92 100644
+index 9c53edb60..af6f54f5a 100644
 --- a/fs/readdir.c
 +++ b/fs/readdir.c
-@@ -24,6 +24,10 @@
+@@ -21,9 +21,16 @@
+ #include <linux/unistd.h>
+ #include <linux/compat.h>
+ #include <linux/uaccess.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif // #ifdef CONFIG_KSU_SUSFS
  
  #include <asm/unaligned.h>
  
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/susfs_def.h>
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +extern __attribute__((hot)) bool susfs_is_inode_sus_path(struct inode *inode);
-+#endif // #ifdef CONFIG_KSU_SUSFS
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
++
  /*
   * Note the "unsafe_put_user() semantics: we goto a
   * label for errors.
-@@ -137,6 +141,9 @@ struct old_linux_dirent {
+@@ -137,6 +144,9 @@ struct old_linux_dirent {
  struct readdir_callback {
  	struct dir_context ctx;
  	struct old_linux_dirent __user * dirent;
@@ -1736,7 +1742,7 @@ index 9c53edb60..7d12eaa92 100644
  	int result;
  };
  
-@@ -147,6 +154,9 @@ static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
+@@ -147,6 +157,9 @@ static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
  		container_of(ctx, struct readdir_callback, ctx);
  	struct old_linux_dirent __user * dirent;
  	unsigned long d_ino;
@@ -1746,7 +1752,7 @@ index 9c53edb60..7d12eaa92 100644
  
  	if (buf->result)
  		return false;
-@@ -158,6 +168,18 @@ static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
+@@ -158,6 +171,18 @@ static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
  		buf->result = -EOVERFLOW;
  		return false;
  	}
@@ -1765,7 +1771,7 @@ index 9c53edb60..7d12eaa92 100644
  	buf->result++;
  	dirent = buf->dirent;
  	if (!user_write_access_begin(dirent,
-@@ -190,6 +212,9 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
+@@ -190,6 +215,9 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
@@ -1775,7 +1781,7 @@ index 9c53edb60..7d12eaa92 100644
  	error = iterate_dir(f.file, &buf.ctx);
  	if (buf.result)
  		error = buf.result;
-@@ -214,6 +239,9 @@ struct linux_dirent {
+@@ -214,6 +242,9 @@ struct linux_dirent {
  struct getdents_callback {
  	struct dir_context ctx;
  	struct linux_dirent __user * current_dir;
@@ -1785,7 +1791,7 @@ index 9c53edb60..7d12eaa92 100644
  	int prev_reclen;
  	int count;
  	int error;
-@@ -229,6 +257,9 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
+@@ -229,6 +260,9 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
  	int reclen = ALIGN(offsetof(struct linux_dirent, d_name) + namlen + 2,
  		sizeof(long));
  	int prev_reclen;
@@ -1795,7 +1801,7 @@ index 9c53edb60..7d12eaa92 100644
  
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
-@@ -244,6 +275,19 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
+@@ -244,6 +278,19 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
  	prev_reclen = buf->prev_reclen;
  	if (prev_reclen && signal_pending(current))
  		return false;
@@ -1815,7 +1821,7 @@ index 9c53edb60..7d12eaa92 100644
  	dirent = buf->current_dir;
  	prev = (void __user *) dirent - prev_reclen;
  	if (!user_write_access_begin(prev, reclen + prev_reclen))
-@@ -283,6 +327,9 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -283,6 +330,9 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
@@ -1825,7 +1831,7 @@ index 9c53edb60..7d12eaa92 100644
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -302,6 +349,9 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -302,6 +352,9 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
  struct getdents_callback64 {
  	struct dir_context ctx;
  	struct linux_dirent64 __user * current_dir;
@@ -1835,7 +1841,7 @@ index 9c53edb60..7d12eaa92 100644
  	int prev_reclen;
  	int count;
  	int error;
-@@ -316,6 +366,9 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
+@@ -316,6 +369,9 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
  	int reclen = ALIGN(offsetof(struct linux_dirent64, d_name) + namlen + 1,
  		sizeof(u64));
  	int prev_reclen;
@@ -1845,7 +1851,7 @@ index 9c53edb60..7d12eaa92 100644
  
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
-@@ -326,6 +379,19 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
+@@ -326,6 +382,19 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
  	prev_reclen = buf->prev_reclen;
  	if (prev_reclen && signal_pending(current))
  		return false;
@@ -1865,7 +1871,7 @@ index 9c53edb60..7d12eaa92 100644
  	dirent = buf->current_dir;
  	prev = (void __user *)dirent - prev_reclen;
  	if (!user_write_access_begin(prev, reclen + prev_reclen))
-@@ -366,6 +432,9 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+@@ -366,6 +435,9 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
@@ -1875,7 +1881,7 @@ index 9c53edb60..7d12eaa92 100644
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -394,6 +463,9 @@ struct compat_old_linux_dirent {
+@@ -394,6 +466,9 @@ struct compat_old_linux_dirent {
  struct compat_readdir_callback {
  	struct dir_context ctx;
  	struct compat_old_linux_dirent __user *dirent;
@@ -1885,7 +1891,7 @@ index 9c53edb60..7d12eaa92 100644
  	int result;
  };
  
-@@ -405,6 +477,9 @@ static bool compat_fillonedir(struct dir_context *ctx, const char *name,
+@@ -405,6 +480,9 @@ static bool compat_fillonedir(struct dir_context *ctx, const char *name,
  		container_of(ctx, struct compat_readdir_callback, ctx);
  	struct compat_old_linux_dirent __user *dirent;
  	compat_ulong_t d_ino;
@@ -1895,7 +1901,7 @@ index 9c53edb60..7d12eaa92 100644
  
  	if (buf->result)
  		return false;
-@@ -416,6 +491,18 @@ static bool compat_fillonedir(struct dir_context *ctx, const char *name,
+@@ -416,6 +494,18 @@ static bool compat_fillonedir(struct dir_context *ctx, const char *name,
  		buf->result = -EOVERFLOW;
  		return false;
  	}
@@ -1914,7 +1920,7 @@ index 9c53edb60..7d12eaa92 100644
  	buf->result++;
  	dirent = buf->dirent;
  	if (!user_write_access_begin(dirent,
-@@ -448,6 +535,9 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
+@@ -448,6 +538,9 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
@@ -1924,7 +1930,7 @@ index 9c53edb60..7d12eaa92 100644
  	error = iterate_dir(f.file, &buf.ctx);
  	if (buf.result)
  		error = buf.result;
-@@ -466,6 +556,9 @@ struct compat_linux_dirent {
+@@ -466,6 +559,9 @@ struct compat_linux_dirent {
  struct compat_getdents_callback {
  	struct dir_context ctx;
  	struct compat_linux_dirent __user *current_dir;
@@ -1934,7 +1940,7 @@ index 9c53edb60..7d12eaa92 100644
  	int prev_reclen;
  	int count;
  	int error;
-@@ -481,6 +574,9 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
+@@ -481,6 +577,9 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
  	int reclen = ALIGN(offsetof(struct compat_linux_dirent, d_name) +
  		namlen + 2, sizeof(compat_long_t));
  	int prev_reclen;
@@ -1944,7 +1950,7 @@ index 9c53edb60..7d12eaa92 100644
  
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
-@@ -496,6 +592,18 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
+@@ -496,6 +595,18 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
  	prev_reclen = buf->prev_reclen;
  	if (prev_reclen && signal_pending(current))
  		return false;
@@ -1963,7 +1969,7 @@ index 9c53edb60..7d12eaa92 100644
  	dirent = buf->current_dir;
  	prev = (void __user *) dirent - prev_reclen;
  	if (!user_write_access_begin(prev, reclen + prev_reclen))
-@@ -534,6 +642,9 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -534,6 +645,9 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
