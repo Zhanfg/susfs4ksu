@@ -1,0 +1,30 @@
+name: SUSFS 6.6 errno side-channel regression
+
+on:
+  pull_request:
+    branches:
+      - gki-android15-6.6
+    paths:
+      - 'kernel_patches/50_add_susfs_in_gki-android15-6.6.patch'
+      - 'tests/check_sus_path_errno.py'
+      - '.github/workflows/verify-sus-path-errno.yml'
+  push:
+    branches:
+      - audit/6.6-sus-path-errno-regression
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify known errno leak patch order
+        run: python3 tests/check_sus_path_errno.py
+      - name: Explain evidence boundary
+        run: |
+          echo 'Only source-level ordering is checked.'
+          echo 'Unprivileged Android stat/faccessat, symlink, RCU and mount namespace tests are required for release.'
