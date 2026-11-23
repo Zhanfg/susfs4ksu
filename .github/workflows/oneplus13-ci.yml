@@ -27,6 +27,11 @@ jobs:
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v7
+        with:
+          # This workflow validates the vendor branch's patchset. Scheduled and
+          # manually dispatched runs would otherwise check out the default
+          # branch, which has no kernel_patches/patchset.json and fails.
+          ref: vendor/oneplus13-sm8750-a16
 
       - name: Load OnePlus manifest
         shell: bash
@@ -119,6 +124,11 @@ jobs:
     steps:
       - name: Checkout SUSFS
         uses: actions/checkout@v7
+        with:
+          # This workflow validates the vendor branch's patchset. Scheduled and
+          # manually dispatched runs would otherwise check out the default
+          # branch, which has no kernel_patches/patchset.json and fails.
+          ref: vendor/oneplus13-sm8750-a16
 
       - name: Compare OnePlus OSS branch heads with pinned baseline
         shell: bash
